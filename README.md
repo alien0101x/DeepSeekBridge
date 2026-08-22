@@ -145,6 +145,33 @@ Use these settings:
 - **API Key:** `any`
 - **Model:** `deepseek-chat` or `deepseek-reasoner`
 
+### Google Antigravity
+
+1. Open Antigravity settings
+2. Add custom model provider:
+   - Provider: `OpenAI Compatible`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
+### Claude Code
+
+1. Open Claude Code settings
+2. Add custom model:
+   - Provider: `OpenAI Compatible`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
+### OpenAI Codex
+
+1. Open Codex settings
+2. Add custom model:
+   - Provider: `OpenAI Compatible`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
 ### Model Mapping
 
 | Model Name | DeepSeek Model |
