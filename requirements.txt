@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+httpx
+python-multipart
+pyjwt
+playwright
+playwright-stealth
