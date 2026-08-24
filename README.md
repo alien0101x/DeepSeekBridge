@@ -72,10 +72,17 @@ DeepSeekBridge v2 supports **function calling** - DeepSeek can now execute tools
 
 ### Workspace
 
-By default, tools operate in the current directory. Set `DEEPSEEK_WORKSPACE` environment variable to change:
+Tools operate in the directory where you start the bridge. Just `cd` to your project before starting:
 
 ```bash
-set DEEPSEEK_WORKSPACE=C:\MyProject
+cd D:\MyProject
+python main.py
+```
+
+Or use `DEEPSEEK_WORKSPACE` to set a fixed workspace:
+
+```bash
+set DEEPSEEK_WORKSPACE=D:\MyProject
 python main.py
 ```
 
@@ -335,9 +342,9 @@ python -m playwright install chromium
 - Try starting a new chat with `/v1/reset`
 
 **Workspace directory:**
-Tools operate in the directory where you start the bridge. Use `DEEPSEEK_WORKSPACE` to change:
+Tools operate in the directory where you start the bridge. Just `cd` to your project first:
 ```bash
-set DEEPSEEK_WORKSPACE=D:\MyProject
+cd D:\MyProject
 python main.py
 ```
 
