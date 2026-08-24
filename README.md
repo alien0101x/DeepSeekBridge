@@ -206,6 +206,93 @@ Use these settings:
    - API Key: `any`
 3. Select `deepseek-chat` or `deepseek-reasoner`
 
+### Windsurf (Codeium)
+
+1. Open Windsurf Settings → Models
+2. Add Custom Model:
+   - Name: `DeepSeek V3`
+   - API Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `DeepSeek V3` from model dropdown
+
+### Amazon Q Developer
+
+1. Open Amazon Q settings
+2. Add custom model provider:
+   - Provider: `OpenAI Compatible`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
+### JetBrains AI Assistant
+
+1. Open JetBrains IDE → Settings → Tools → AI Assistant
+2. Add custom model:
+   - Provider: `OpenAI Compatible`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
+### Sourcegraph Cody
+
+1. Open Cody settings
+2. Add custom model provider:
+   - Provider: `OpenAI Compatible`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
+### Tabnine
+
+1. Open Tabnine settings
+2. Add custom model:
+   - Provider: `OpenAI Compatible`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
+### LM Studio
+
+1. Open LM Studio
+2. Go to Developer tab
+3. Add custom model:
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+4. Select `deepseek-chat` or `deepseek-reasoner`
+
+### Ollama (with OpenAI-compatible mode)
+
+1. Configure Ollama to use custom endpoint
+2. Set base URL: `http://localhost:8084/v1`
+3. Set API key: `any`
+4. Select `deepseek-chat` or `deepseek-reasoner`
+
+### Open WebUI
+
+1. Open Open WebUI settings
+2. Add custom model provider:
+   - Provider: `OpenAI Compatible`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
+### LibreChat
+
+1. Open LibreChat settings
+2. Add custom endpoint:
+   - Name: `DeepSeek Bridge`
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
+### ChatGPT Desktop (with custom endpoint)
+
+1. Open ChatGPT Desktop settings
+2. Add custom API endpoint:
+   - Base URL: `http://localhost:8084/v1`
+   - API Key: `any`
+3. Select `deepseek-chat` or `deepseek-reasoner`
+
 ### Model Mapping
 
 | Model Name | DeepSeek Model |
@@ -222,6 +309,8 @@ Use these settings:
 | `/v1/chats` | GET | List chats in sidebar |
 | `/v1/chats/switch` | POST | Switch to a chat |
 | `/v1/reset` | POST | Start new chat |
+| `/v1/owner` | GET | Owner attribution info |
+| `/v1/update-check` | GET | Check for updates |
 
 ## Troubleshooting
 
