@@ -28,6 +28,8 @@ OpenAI-compatible bridge to [chat.deepseek.com](https://chat.deepseek.com) using
 
 3. First time: Chrome opens → login to chat.deepseek.com → done!
 
+> **Note:** You need a **DeepSeek account** (not Google/Gmail). Create one free at https://chat.deepseek.com
+
 ### Auto-Start for Any Agent
 
 Use `bridge-status.py` to auto-start the bridge from any agent:
@@ -350,6 +352,11 @@ taskkill /F /IM python.exe
 
 **Session expired:**
 Delete `browser_profile/` and login again.
+
+**Login issues:**
+- You need a **DeepSeek account** (not Google/Gmail)
+- Create free account at https://chat.deepseek.com
+- DeepSeek supports: Email, Phone, Google, GitHub sign-in
 
 **Chrome not opening:**
 Make sure Python and Playwright are installed:
