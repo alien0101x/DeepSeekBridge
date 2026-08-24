@@ -6,6 +6,7 @@ OpenAI-compatible bridge to [chat.deepseek.com](https://chat.deepseek.com) using
 
 - 🔌 OpenAI API compatible (`/v1/chat/completions`)
 - 🧠 Supports DeepSeek-V3 and DeepSeek-R1
+- 🔧 **Tool Support** - Execute commands, create/edit files, search code
 - 💾 Remembers login (only login once)
 - 🚀 Fast - reuses same chat session
 - 🔒 Your tokens stay local (not uploaded)
@@ -44,6 +45,39 @@ OpenAI-compatible bridge to [chat.deepseek.com](https://chat.deepseek.com) using
    ```
    python main.py
    ```
+
+## Tool Support
+
+DeepSeekBridge v2 supports **function calling** - DeepSeek can now execute tools like a real AI agent!
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `execute_command` | Run shell commands (PowerShell, bash, etc.) |
+| `create_file` | Create new files with content |
+| `read_file` | Read file contents |
+| `edit_file` | Edit existing files (find & replace) |
+| `list_files` | List files in directory |
+| `search_files` | Search for patterns in files |
+| `delete_file` | Delete files or directories |
+
+### How It Works
+
+1. OpenCode sends tool definitions with your request
+2. DeepSeekBridge converts tools to natural language instructions
+3. DeepSeek responds with `<tool_call>` tags when it wants to use a tool
+4. The bridge executes the tool locally
+5. Results are sent back to DeepSeek for final response
+
+### Workspace
+
+By default, tools operate in the current directory. Set `DEEPSEEK_WORKSPACE` environment variable to change:
+
+```bash
+set DEEPSEEK_WORKSPACE=C:\MyProject
+python main.py
+```
 
 ## Usage with AI Agents
 
@@ -204,6 +238,18 @@ Make sure Python and Playwright are installed:
 ```
 pip install -r requirements.txt
 python -m playwright install chromium
+```
+
+**Tools not working:**
+- Make DeepSeek is in "Chat" mode (not "Write" mode)
+- The model needs to output `<tool_call>` tags - some conversations may not trigger tool use
+- Try starting a new chat with `/v1/reset`
+
+**Workspace directory:**
+Tools operate in the directory where you start the bridge. Use `DEEPSEEK_WORKSPACE` to change:
+```bash
+set DEEPSEEK_WORKSPACE=D:\MyProject
+python main.py
 ```
 
 ## Security
