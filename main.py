@@ -34,6 +34,7 @@ for _s in (sys.stdout, sys.stderr):
 BASE_URL = "https://chat.deepseek.com"
 PORT = int(os.getenv("DEEPSEEK_BRIDGE_PORT", "8084"))
 PROFILE = os.path.join(os.path.dirname(__file__), "browser_profile")
+os.makedirs(PROFILE, exist_ok=True)
 WORKSPACE = os.getenv("DEEPSEEK_WORKSPACE", os.getcwd())
 
 # ─── Owner signature (embedded, cannot be removed without breaking auth) ───

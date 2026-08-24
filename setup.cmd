@@ -20,8 +20,9 @@ pip install -r requirements.txt -q
 echo [2/3] Installing Playwright browser...
 python -m playwright install chromium
 
-echo [3/3] Creating desktop shortcut...
-powershell -Command "$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut('%USERPROFILE%\Desktop\DeepSeekBridge.lnk'); $shortcut.TargetPath = 'cmd.exe'; $shortcut.Arguments = '/k cd /d \"%~dp0\" && python main.py'; $shortcut.WorkingDirectory = '%~dp0'; $shortcut.Save()"
+echo [3/3] Creating browser profile and shortcut...
+if not exist "browser_profile" mkdir browser_profile
+powershell -Command "$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut('%USERPROFILE%\Desktop\DeepSeekBridge.lnk'); $shortcut.TargetPath = 'cmd.exe'; $shortcut.Arguments = '/k cd /d ""%~dp0"" && python main.py'; $shortcut.WorkingDirectory = '%~dp0'; $shortcut.Save()"
 
 echo.
 echo ======================================
