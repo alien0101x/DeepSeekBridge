@@ -592,7 +592,7 @@ class DeepSeekDriver:
             stable_polls = 0
             dom_abandoned = False
             RISKY = ("`", "{", "<", ">", "\u2713", "\u2717", "|")
-            deadline = time.time() + 180
+            deadline = time.time() + 120  # 2 min timeout for DeepSeek response
 
             while time.time() < deadline:
                 if resp_future.done():
@@ -627,7 +627,7 @@ class DeepSeekDriver:
             # Authoritative final text: prefer network, but never accept a
             # truncated capture when DOM saw more.
             try:
-                raw = await asyncio.wait_for(resp_future, timeout=60)
+                raw = await asyncio.wait_for(resp_future, timeout=120)
                 sse_body = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
                 final_net = build_openai_text(sse_body)
             except asyncio.TimeoutError:
@@ -922,8 +922,11 @@ async def chat_completions(request: Request):
     tools = data.get("tools", [])
 
     # Build conversation history (skip system prompts - they are huge and useless here)
+    # Aggressively truncate to stay under DeepSeek web timeout
+    MAX_CONTENT_LEN = 2000
+    MAX_HISTORY = 6
     history_parts = []
-    for m in messages[-8:]:
+    for m in messages[-MAX_HISTORY:]:
         role = m.get("role", "")
         content = m.get("content", "")
         if isinstance(content, list):
@@ -934,9 +937,9 @@ async def chat_completions(request: Request):
             history_parts.append(f"[User]: {content}")
         elif role == "assistant":
             if content:
-                history_parts.append(f"[Assistant]: {content[:2000]}")
+                history_parts.append(f"[Assistant]: {content[:800]}")
         elif role == "tool":
-            history_parts.append(f"[Tool Result]: {str(content)[:1500]}")
+            history_parts.append(f"[Tool Result]: {str(content)[:500]}")
 
     # Build the prompt
     tool_prompt = build_tool_prompt(tools) if tools else ""
@@ -962,9 +965,17 @@ async def chat_completions(request: Request):
     if len(history_parts) <= 1:
         full_message = PROJECT_LOG_INSTRUCTION + "\n\n" + full_message
 
-    # Hard cap - giant messages make DeepSeek web crawl
-    if len(full_message) > 12000:
-        full_message = "...(truncated)...\n" + full_message[-12000:]
+    # Hard cap - DeepSeek web UI times out with long messages (~8K safe limit)
+    MAX_MSG_LEN = 8000
+    if len(full_message) > MAX_MSG_LEN:
+        # Keep tool prompt + current message, trim history
+        if tool_prompt and len(full_message) > MAX_MSG_LEN:
+            history_budget = MAX_MSG_LEN - len(tool_prompt) - 200
+            trimmed_history = "\n\n".join(history_parts[:-1])[-history_budget:]
+            full_message = tool_prompt + "\n\n---\n\n" + trimmed_history + "\n\nCurrent request:\n" + current_msg
+        # Still too long? Hard truncate current message
+        if len(full_message) > MAX_MSG_LEN:
+            full_message = full_message[:MAX_MSG_LEN] + "\n...(truncated)..."
 
     label = resolve_label(model)
 
