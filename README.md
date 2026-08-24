@@ -28,6 +28,23 @@ OpenAI-compatible bridge to [chat.deepseek.com](https://chat.deepseek.com) using
 
 3. First time: Chrome opens → login to chat.deepseek.com → done!
 
+### Auto-Start for Any Agent
+
+Use `bridge-status.py` to auto-start the bridge from any agent:
+
+```bash
+# Check if running
+python bridge-status.py
+
+# Auto-start if not running
+python bridge-status.py --start
+
+# Wait until ready
+python bridge-status.py --wait
+```
+
+**For OpenCode users:** The plugin auto-starts the bridge when needed.
+
 4. After setup, just double-click `DeepSeekBridge` on desktop.
 
 ### Manual Setup
@@ -185,6 +202,11 @@ Use these settings:
 - **Base URL:** `http://localhost:8084/v1`
 - **API Key:** `any`
 - **Model:** `deepseek-chat` or `deepseek-reasoner`
+
+**Auto-start bridge from any agent:**
+```bash
+python bridge-status.py --start
+```
 
 ### Google Antigravity
 
