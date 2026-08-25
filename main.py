@@ -402,7 +402,9 @@ def clean_dom_artifacts(text: str) -> str:
     # Clean leading/trailing code block UI artifacts (e.g. "jsonCopyDownload", "pythonCopy")
     text = re.sub(r'^(json|python|javascript|typescript|bash|shell|html|css|copy|download|Copy|Download)+', '', text, flags=re.IGNORECASE)
     text = re.sub(r'(jsonCopyDownload|pythonCopy|javascriptCopy|typescriptCopy|bashCopy|shellCopy|htmlCopy|cssCopy|Copy|Download)+\s*$', '', text, flags=re.IGNORECASE)
-    return text
+    # Strip lone code fences (``` only, not code blocks with content)
+    text = re.sub(r'^```\w*\s*$', '', text, flags=re.MULTILINE)
+    return text.strip()
 
 
 class DeepSeekDriver:
@@ -573,17 +575,15 @@ class DeepSeekDriver:
 
         try:
             extract_js = """() => {
-                // Get the LAST assistant message - try multiple strategies
                 const containers = document.querySelectorAll('[class*="ds-markdown"], [class*="message-content"], [class*="markdown"], [class*="answer"], div[class*="message"]');
                 if (containers.length) {
                     const last = containers[containers.length - 1];
-                    // Use textContent to include code blocks
-                    const t = last.textContent || last.innerText || '';
+                    const t = last.innerText || last.textContent || '';
                     if (t.trim()) return t.trim();
                 }
                 const chatArea = document.querySelector('[class*="chat-content"], [class*="conversation"], main');
                 if (chatArea) {
-                    const t = chatArea.textContent || '';
+                    const t = chatArea.innerText || chatArea.textContent || '';
                     if (t.trim()) return t.trim();
                 }
                 return '';
