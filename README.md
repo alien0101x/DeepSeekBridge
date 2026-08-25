@@ -195,9 +195,43 @@ Use these settings:
 python bridge-status.py --start
 ```
 
-### Antigravity
+### Google Antigravity
 
-> **Note:** Antigravity uses its own cloud-based AI backend. It does not support custom OpenAI-compatible providers. Use Cursor, Cline, or Continue instead.
+Requires [antigravity-add-model](https://github.com/vahapogut/antigravity-add-model) proxy patch.
+
+1. Clone and build the patch:
+   ```
+   git clone https://github.com/vahapogut/antigravity-add-model.git
+   cd antigravity-add-model
+   npm install
+   npx tsc
+   ```
+
+2. Deploy (patches Antigravity):
+   ```
+   powershell -ExecutionPolicy Bypass -File deploy.ps1
+   ```
+
+3. Add DeepSeekBridge — edit `~/.gemini/antigravity/custom_models.json`:
+   ```json
+   {
+     "models": [
+       {
+         "name": "models/deepseek-chat",
+         "displayName": "DeepSeek V3",
+         "description": "DeepSeek V3 via DeepSeekBridge",
+         "provider": "custom",
+         "apiKey": "any",
+         "apiUrl": "http://localhost:8084/v1/chat/completions",
+         "externalModelName": "deepseek-chat"
+       }
+     ]
+   }
+   ```
+
+4. Or use the "Add Model" UI in Settings → Models.
+
+5. After every Antigravity update, re-run `repatch.bat`.
 
 ### Windsurf (Codeium)
 
