@@ -664,8 +664,14 @@ class DeepSeekDriver:
                     stable_polls = 0
                     cleaned = clean_dom_artifacts(full_current)
                     if cleaned.strip() and cleaned.strip() != clean_dom_artifacts(baseline_text).strip():
-                        sent = cleaned
-                        yield cleaned
+                        # DOM re-rendered - only yield the new tail
+                        if len(cleaned) > len(sent):
+                            tail = cleaned[len(sent):]
+                            if tail.strip():
+                                sent = cleaned
+                                yield tail
+                        else:
+                            sent = cleaned
                     stable_polls += 1
                     if stable_polls >= 20:
                         break
