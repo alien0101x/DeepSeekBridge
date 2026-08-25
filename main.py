@@ -304,13 +304,13 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
-    return f"""DO NOT narrate. DO NOT explain. Output ONLY this JSON block and nothing else:
+    return f"""REPLY WITH ONLY A JSON TOOL CALL. NO TEXT BEFORE OR AFTER.
 
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
 ```
 
-Available tools:
+TOOLS:
 {chr(10).join(lines)}"""
 
 
@@ -1029,13 +1029,13 @@ async def chat_completions(request: Request):
 
     # Build the prompt
     tool_prompt = build_tool_prompt(tools) if tools else ""
-    if tool_prompt:
-        print(f"TOOL_PROMPT ({len(tool_prompt)} chars): {tool_prompt[:300]}...", flush=True)
 
     # Create the full message with history
     full_message = ""
+
+    # Tool prompt FIRST so DeepSeek knows the format
     if tool_prompt:
-        full_message += tool_prompt + "\n\n---\n\n"
+        full_message += tool_prompt + "\n\n"
 
     if len(history_parts) > 1:
         full_message += "Conversation history:\n"
@@ -1046,8 +1046,9 @@ async def chat_completions(request: Request):
     current_msg = history_parts[-1] if history_parts else "[User]: Hello"
     full_message += "Current request:\n" + current_msg
 
-    if tools:
-        full_message += '\n\nREMINDER: If an action is needed, reply ONLY with the ```json tool block. Never narrate actions as text.'
+    # Tool prompt AGAIN at the END as reminder
+    if tool_prompt:
+        full_message += "\n\n" + tool_prompt
 
     # Auto-inject PROJECT_LOG protocol on first message of each session
     # Disabled: confuses DeepSeek and prevents tool calls
