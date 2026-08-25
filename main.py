@@ -807,7 +807,12 @@ def build_openai_text(raw_sse):
                     parts.append(v)
                     last_appended = v
 
-    return "".join(parts)
+    text = "".join(parts)
+    # Clean trailing garbage from DeepSeek web UI artifacts
+    text = re.sub(r'[\s]*d[\?\uFFFD�]{1,5}[\s]*$', '', text)
+    # Clean mid-text artifacts (e.g. "Hi alienx! d??...")
+    text = re.sub(r'([\w!])\s*d[\?\uFFFD�]{1,5}\s*', r'\1 ', text)
+    return text
 
 
 @app.get("/v1/models")
