@@ -321,12 +321,12 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
-    return f"""REPLY IN ENGLISH. REPLY WITH ONLY A JSON TOOL CALL. DO THE FIRST ACTION ONLY. NO TEXT.
-
+    return f"""REPLY IN ENGLISH.
+If another action is needed NOW, reply with ONLY this JSON block:
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
 ```
-
+If the task is DONE or no more actions are needed, reply in PLAIN TEXT (no JSON block).
 TOOLS:
 {chr(10).join(lines)}"""
 
