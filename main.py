@@ -636,31 +636,33 @@ class DeepSeekDriver:
                 final_net = ""
             final = final_net if len(final_net) >= len(last_text) else last_text
 
-            # Reconcile against EXACTLY what was sent - word loss impossible
-            if dom_abandoned:
-                if final.strip() and final.strip() != sent.strip():
-                    # Only yield the part we haven't already sent (avoid duplication)
-                    if final.strip().startswith(sent.strip()):
-                        rest = final[len(sent):]
-                        if rest.strip():
-                            yield rest
-                    else:
-                        # Network text is different from DOM - yield only the diff
-                        shorter = sent if len(sent) < len(final) else final
-                        longer = final if len(sent) < len(final) else sent
-                        if longer.strip().startswith(shorter.strip()):
-                            rest = longer[len(shorter):]
-                            if rest.strip():
-                                yield rest
-                        else:
-                            # Complete mismatch - yield network text as canonical
-                            yield final
-            elif final and final.startswith(sent):
-                rest = final[len(sent):]
-                if rest.strip():
-                    yield rest
-            elif final and final.strip():
-                yield "\n" + final
+            # Reconcile: find where DOM-sent text ends in network text, yield remainder
+            if final_net and sent.strip():
+                # Try to find DOM text within network text (fuzzy)
+                net_lower = final.strip()
+                sent_lower = sent.strip()
+                if net_lower.startswith(sent_lower):
+                    # Perfect overlap — yield remainder
+                    rest = final[len(sent):]
+                    if rest.strip():
+                        yield rest
+                elif sent_lower in net_lower:
+                    # DOM text found somewhere in network — yield after it
+                    idx = net_lower.index(sent_lower) + len(sent_lower)
+                    rest = final[idx:]
+                    if rest.strip():
+                        yield rest
+                elif net_lower in sent_lower:
+                    # Network is subset of DOM — nothing to add
+                    pass
+                else:
+                    # No overlap — network is canonical, yield it (client handles)
+                    if final.strip():
+                        yield "\n" + final
+            elif final_net and not sent.strip():
+                # DOM yielded nothing, network has everything
+                if final.strip():
+                    yield final
         finally:
             self.page.remove_listener("response", on_response_capture)
 
