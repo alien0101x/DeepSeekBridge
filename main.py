@@ -304,19 +304,14 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
-    return f"""Reply with a tool call using this exact format:
+    return f"""DO NOT narrate. DO NOT explain. Output ONLY this JSON block and nothing else:
 
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
 ```
 
-TOOLS (use exactly these names):
-{chr(10).join(lines)}
-
-RULES:
-- One tool call per reply
-- File paths MUST be relative
-- Never narrate actions, just call the tool"""
+Available tools:
+{chr(10).join(lines)}"""
 
 
 def parse_tool_calls(text: str) -> list:
@@ -348,7 +343,13 @@ def parse_tool_calls(text: str) -> list:
                 depth -= 1
                 if depth == 0 and start is not None:
                     span = text[start:i + 1]
-                    if '"name"' in span and '"arguments"' in span:
+                    unescaped = span.replace('\\"', '"')
+                    if '"name"' in unescaped and '"arguments"' in unescaped:
+                        candidates.append(span)
+                    elif '"arguments"' in unescaped and ('"filePath"' in unescaped or '"command"' in unescaped or '"content"' in unescaped):
+                        candidates.append(span)
+                    # DeepSeek sometimes outputs args directly: {"filePath": "...", "content": "..."}
+                    elif ('"filePath"' in unescaped or '"command"' in unescaped) and '"content"' in unescaped:
                         candidates.append(span)
                     start = None
 
@@ -356,10 +357,19 @@ def parse_tool_calls(text: str) -> list:
     for match in candidates:
         try:
             cleaned = match.replace("```json", "").replace("```", "").strip()
+            cleaned = cleaned.replace('\\"', '"')
             call = json.loads(cleaned)
             if isinstance(call.get("arguments"), str):
                 call["arguments"] = json.loads(call["arguments"])
             if call.get("name"):
+                tool_calls.append(call)
+            elif 'filePath' in match or 'content' in match:
+                if not call.get("arguments"):
+                    call = {"name": "write", "arguments": call}
+                tool_calls.append(call)
+            elif 'command' in match:
+                if not call.get("arguments"):
+                    call = {"name": "bash", "arguments": call}
                 tool_calls.append(call)
         except (json.JSONDecodeError, TypeError):
             continue
@@ -637,8 +647,8 @@ class DeepSeekDriver:
                 ):
                     break
 
-                # For tool calls, just wait for stable text (code blocks take time to render)
-                if has_tools and len(sent) >= 800:
+                # For tool calls, wait for stable text
+                if has_tools and len(sent) >= 3000:
                     break
 
                 if full_current == last_text:
@@ -1106,11 +1116,17 @@ async def chat_completions(request: Request):
                     net_text = getattr(driver, 'last_network_text', '')
                     if net_text and len(net_text) > len(full_text):
                         full_text = net_text
+                    print(f"DEBUG full_text ({len(full_text)} chars): {full_text[:300]}", flush=True)
 
                     full_text = clean_dom_artifacts(full_text)
 
                     # Tool call classification (post-streaming)
-                    classified_tool = bool(re.search(r'```(?:json)?\s*\{', full_text) or re.search(r'\{\s*"name"', full_text))
+                    classified_tool = bool(
+                        re.search(r'```(?:json)?\s*\{', full_text)
+                        or re.search(r'\{\s*"name"', full_text)
+                        or re.search(r'"name"\s*:\s*"', full_text)
+                        or re.search(r'"arguments"\s*:', full_text)
+                    )
                     if tools and not parse_tool_calls(full_text):
                         salvaged = salvage_json_text(full_text)
                         if salvaged != full_text:
