@@ -138,6 +138,11 @@ class ToolExecutor:
             }
             tool_name = TOOL_MAP.get(tool_name, tool_name)
 
+            # Normalize argument names (clients send camelCase, internals use snake_case)
+            ARG_ALIASES = {"filePath": "file_path", "filepath": "file_path", "path": "file_path",
+                           "cmd": "command", "query": "pattern"}
+            arguments = {ARG_ALIASES.get(k, k): v for k, v in arguments.items()}
+
             if tool_name == "execute_command":
                 return self.execute_command(arguments)
             elif tool_name == "create_file":
@@ -316,7 +321,7 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
-    return f"""REPLY WITH ONLY A JSON TOOL CALL. DO THE FIRST ACTION ONLY. NO TEXT.
+    return f"""REPLY IN ENGLISH. REPLY WITH ONLY A JSON TOOL CALL. DO THE FIRST ACTION ONLY. NO TEXT.
 
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
@@ -324,6 +329,31 @@ def build_tool_prompt(tools: list) -> str:
 
 TOOLS:
 {chr(10).join(lines)}"""
+
+
+def _strip_json_fragment(text: str, has_tools: bool) -> str:
+    """Drop truncated/broken JSON fragments from final answers (e.g. '{"')."""
+    if has_tools:
+        t = (text or "").strip()
+        if t.startswith("{") and not parse_tool_calls(t):
+            return ""
+    return text or ""
+
+
+def _repair_broken_json(fragment: str):
+    """Lenient extraction when the model emits invalid JSON with unescaped quotes."""
+    name_m = re.search(r'"name"\s*:\s*"([^"]+)"', fragment)
+    if not name_m:
+        return None
+    pairs = re.findall(
+        r'"([A-Za-z_]\w*)"\s*:\s*"(.*?)"(?=\s*(?:,\s*"[A-Za-z_]\w*"\s*:|[}\]]))',
+        fragment,
+        re.DOTALL,
+    )
+    args = {k: v for k, v in pairs if k != "name"}
+    if not args:
+        return None
+    return {"name": name_m.group(1), "arguments": args}
 
 
 def parse_tool_calls(text: str) -> list:
@@ -384,7 +414,11 @@ def parse_tool_calls(text: str) -> list:
                     call = {"name": "bash", "arguments": call}
                 tool_calls.append(call)
         except (json.JSONDecodeError, TypeError):
-            continue
+            # Tolerant repair: DeepSeek emits unescaped inner quotes, e.g.
+            # "content": "print("Hello World")" — re-extract key/value pairs leniently.
+            repaired = _repair_broken_json(cleaned)
+            if repaired:
+                tool_calls.append(repaired)
 
     return tool_calls
 
@@ -563,6 +597,56 @@ class DeepSeekDriver:
             label,
         )
         await self.page.wait_for_timeout(600)
+
+    async def ensure_think_off(self):
+        """Disable the DeepThink toggle. DOM classes are obfuscated, so detect state
+        via computed background-color signature persisted in think_off.json."""
+        try:
+            sig_file = Path(__file__).parent / "think_off.json"
+            sig = ""
+            if sig_file.exists():
+                try:
+                    sig = json.loads(sig_file.read_text(encoding="utf-8")).get("bg", "")
+                except Exception:
+                    sig = ""
+
+            async def get_bg():
+                return await self.page.evaluate(
+                    """() => {
+                        const norm = s => (s||'').trim().toLowerCase();
+                        const els = [...document.querySelectorAll('div,span')];
+                        const dt = els.find(e => e.children.length === 0 && norm(e.textContent) === 'deepthink')
+                                || els.find(e => norm(e.textContent).startsWith('deepthink'));
+                        if (!dt) return '';
+                        const target = dt.closest('div[class]') || dt;
+                        return getComputedStyle(target).backgroundColor + '|' + getComputedStyle(dt).color;
+                    }"""
+                )
+
+            bg = await get_bg()
+            if not bg:
+                return False
+            if sig and bg == sig:
+                return False  # already off
+            await self.page.evaluate(
+                """() => {
+                    const norm = s => (s||'').trim().toLowerCase();
+                    const els = [...document.querySelectorAll('div,span')];
+                    const dt = els.find(e => e.children.length === 0 && norm(e.textContent) === 'deepthink')
+                            || els.find(e => norm(e.textContent).startsWith('deepthink'));
+                    const target = (dt && dt.closest('div[class]')) || dt;
+                    if (target) target.click();
+                }"""
+            )
+            await self.page.wait_for_timeout(400)
+            bg2 = await get_bg()
+            if bg2 and bg2 != bg:
+                sig_file.write_text(json.dumps({"bg": bg2}), encoding="utf-8")
+            print(f"[DeepThink] toggled off (state {bg!r} -> {bg2!r})", flush=True)
+            return True
+        except Exception as e:
+            print(f"[DeepThink] ensure_think_off error: {e}", flush=True)
+            return False
 
     async def _type_and_send(self, text):
         for attempt in range(2):
@@ -1115,6 +1199,7 @@ async def chat_completions(request: Request):
                     if not driver.chat_active:
                         await driver.new_chat()
                         await driver.select_model(label)
+                        await driver.ensure_think_off()
                         chat_turn_count = 0
                     yield sse({"role": "assistant"})
 
@@ -1165,6 +1250,22 @@ async def chat_completions(request: Request):
                             pass
 
                     tool_calls = relativize_tool_paths(parse_tool_calls(full_text))
+                    # Reject calls with empty args (DOM truncation artifacts)
+                    usable = [c for c in tool_calls if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
+                    if tool_calls and not usable:
+                        try:
+                            nudged = []
+                            async for p in driver.send_and_stream(
+                                "Your previous JSON block was incomplete/truncated. Repeat the FULL tool call JSON block now, nothing else."
+                            ):
+                                nudged.append(p)
+                            t2 = clean_dom_artifacts("".join(nudged))
+                            tc2 = [c for c in relativize_tool_paths(parse_tool_calls(t2)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
+                            if tc2:
+                                usable = tc2
+                        except Exception:
+                            pass
+                    tool_calls = usable
 
                     # AUTO-EXECUTE: loop until no more tool calls
                     MAX_AUTO_ROUNDS = 5
@@ -1210,7 +1311,7 @@ async def chat_completions(request: Request):
                             yield sse({"content": prose})
                         yield sse({}, finish="stop")
                     else:
-                        yield sse({"content": full_text})
+                        yield sse({"content": _strip_json_fragment(full_text, bool(tools))})
                         yield sse({}, finish="stop")
 
                     yield "data: [DONE]\n\n"
@@ -1238,6 +1339,7 @@ async def chat_completions(request: Request):
             if not driver.chat_active:
                 await driver.new_chat()
                 await driver.select_model(label)
+                await driver.ensure_think_off()
                 chat_turn_count = 0
             raw = await driver.send_and_capture(full_message, has_tools=bool(tools))
             chat_turn_count += 1
@@ -1257,7 +1359,7 @@ async def chat_completions(request: Request):
     # AUTO-EXECUTE: loop until no more tool calls or max iterations
     MAX_AUTO_ROUNDS = 5
     for _round in range(MAX_AUTO_ROUNDS):
-        tool_calls = relativize_tool_paths(parse_tool_calls(text))
+        tool_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
         if not tool_calls:
             break
 
@@ -1288,7 +1390,7 @@ async def chat_completions(request: Request):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": text},
+                    "message": {"role": "assistant", "content": _strip_json_fragment(text, bool(tools))},
                     "finish_reason": "stop",
                 }
             ],
