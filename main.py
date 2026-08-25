@@ -639,8 +639,7 @@ class DeepSeekDriver:
                     full_current = current + "\n" + code_text
 
                 if not has_tools and (
-                    "\nCopy\n" in current or "```" in current
-                    or any(c in current for c in RISKY)
+                    "\nCopy\n" in current
                     or len(sent) >= 300
                 ):
                     break
