@@ -404,6 +404,9 @@ def remove_tool_calls(text: str) -> str:
 def clean_dom_artifacts(text: str) -> str:
     """Remove trailing UI artifacts from DOM-extracted text."""
     text = re.sub(r'[\s]*d[\?\uFFFD\ufffdY`<>]{1,8}[\s]*$', '', text)
+    # Clean leading code block UI artifacts (e.g. "jsonCopyDownload", "pythonCopy")
+    text = re.sub(r'^(json|python|javascript|typescript|bash|shell|html|css|copy|download)+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^(Copy|Download)+', '', text, flags=re.IGNORECASE)
     return text
 
 
@@ -414,7 +417,7 @@ class DeepSeekDriver:
         self.page = None
         self.ready = False
         self.chat_active = False
-        self.ws_frames = []  # accumulated WebSocket frames for SSE reconstruction
+
 
     async def start(self):
         self.pw = await async_playwright().__aenter__()
@@ -433,6 +436,24 @@ class DeepSeekDriver:
 
     async def boot(self):
         self.page = self.ctx.pages[0] if self.ctx.pages else await self.ctx.new_page()
+
+        # Use CDP to track HTTP responses for SSE body capture
+        self._cdp_response_ids = {}
+        try:
+            self.cdp = await self.page.context.new_cdp_session(self.page)
+            await self.cdp.send("Network.enable")
+
+            def on_response_received(params):
+                resp = params.get("response", {})
+                url = resp.get("url", "")
+                req_id = params.get("requestId", "")
+                if "chat/completion" in url:
+                    self._cdp_response_ids["chat_completion"] = req_id
+
+            self.cdp.on("Network.responseReceived", on_response_received)
+        except Exception:
+            self.cdp = None
+
         await self.page.goto(BASE_URL, wait_until="domcontentloaded")
         await self.page.wait_for_timeout(8000)
 
@@ -444,22 +465,6 @@ class DeepSeekDriver:
 
         await self.page.wait_for_selector("textarea", timeout=30000)
         self.ready = True
-
-        # Register WebSocket listener early — DeepSeek uses WS for SSE
-        def _on_ws(ws):
-            def _on_frame(msg):
-                try:
-                    data = msg.text if hasattr(msg, 'text') else str(msg)
-                    self.ws_frames.append(data)
-                except Exception:
-                    pass
-            ws.on("framereceived", _on_frame)
-
-        try:
-            self.page.on("websocket", _on_ws)
-        except Exception:
-            pass
-
         print("BOOT: success", flush=True)
 
     async def new_chat(self):
@@ -561,58 +566,41 @@ class DeepSeekDriver:
                     raise RuntimeError("Could not send message - page unresponsive")
 
     async def send_and_capture(self, text):
-        await self._type_and_send(text)
+        """Non-streaming: delegate to send_and_stream and join the chunks."""
+        chunks = []
+        async for piece in self.send_and_stream(text):
+            chunks.append(piece)
+        return "".join(chunks)
 
-        resp_future = asyncio.get_event_loop().create_future()
-
-        def on_response_capture(response):
-            if response.request.method == "POST" and "chat/completion" in response.url:
-                asyncio.ensure_future(capture(response))
-
-        async def capture(response):
-            try:
-                body = await response.body()
-                if resp_future and not resp_future.done():
-                    resp_future.set_result(body)
-            except Exception:
-                pass
-
-        self.page.on("response", on_response_capture)
-
-        try:
-            raw = await asyncio.wait_for(resp_future, timeout=180000)
-        except asyncio.TimeoutError:
-            raw = None
-        finally:
-            self.page.remove_listener("response", on_response_capture)
-
-        return raw.decode("utf-8", "replace") if raw else ""
-
-    async def send_and_stream(self, text):
-        """Send and yield live chunks via DOM polling; WebSocket frames for final text."""
+    async def send_and_stream(self, text, has_tools=False):
+        """Send and yield live chunks via DOM polling."""
         await self.page.wait_for_selector("textarea", timeout=20000)
-
-        # Clear accumulated WebSocket frames from previous requests
-        self.ws_frames.clear()
 
         try:
             extract_js = """() => {
-                const sels = ['.ds-markdown', '[class*="ds-markdown"]', 'div[class*="markdown"]', 'div[class*="message-content"]', 'div[class*="answer"]'];
-                for (const sels_i of sels) {
-                    const els = document.querySelectorAll(sels_i);
-                    if (els.length > 1) {
-                        const t = els[els.length - 1].innerText || '';
-                        if (t.trim()) return t;
-                    } else if (els.length === 1) {
-                        const el = els[0];
-                        const msgEls = el.querySelectorAll('[class*="message"], [class*="turn"], [class*="block"]');
-                        if (msgEls.length > 1) {
-                            const t = msgEls[msgEls.length - 1].innerText || '';
-                            if (t.trim()) return t;
-                        }
-                        const t = el.innerText || '';
-                        if (t.trim()) return t;
-                    }
+                // Get the LAST assistant message - try multiple strategies
+                const containers = document.querySelectorAll('[class*="ds-markdown"], [class*="message-content"], [class*="markdown"], [class*="answer"], div[class*="message"]');
+                if (containers.length) {
+                    const last = containers[containers.length - 1];
+                    // Use textContent to include code blocks
+                    const t = last.textContent || last.innerText || '';
+                    if (t.trim()) return t.trim();
+                }
+                const chatArea = document.querySelector('[class*="chat-content"], [class*="conversation"], main');
+                if (chatArea) {
+                    const t = chatArea.textContent || '';
+                    if (t.trim()) return t.trim();
+                }
+                return '';
+            }"""
+
+            # For tool calls, also grab code blocks from the page
+            extract_code_js = """() => {
+                // Find the LAST code block on the page (where tool call JSON lives)
+                const codeBlocks = document.querySelectorAll('pre code, code, [class*="code-block"]');
+                if (codeBlocks.length) {
+                    const last = codeBlocks[codeBlocks.length - 1];
+                    return last.textContent || last.innerText || '';
                 }
                 return '';
             }"""
@@ -635,33 +623,48 @@ class DeepSeekDriver:
                 try:
                     current = await self.page.evaluate(extract_js)
                 except Exception:
-                    continue
+                    current = ""
 
-                if (
+                # For tool calls, also check if a code block appeared
+                code_text = ""
+                if has_tools:
+                    try:
+                        code_text = await self.page.evaluate(extract_code_js)
+                    except Exception:
+                        pass
+
+                # Combine text + code block for tool call detection
+                full_current = current
+                if has_tools and code_text and code_text not in current:
+                    full_current = current + "\n" + code_text
+
+                if not has_tools and (
                     "\nCopy\n" in current or "```" in current
                     or any(c in current for c in RISKY)
                     or len(sent) >= 300
                 ):
                     break
 
-                if current == last_text:
+                # For tool calls, just wait for stable text (code blocks take time to render)
+                if has_tools and len(sent) >= 800:
+                    break
+
+                if full_current == last_text:
                     stable_polls += 1
                     if stable_polls >= 20:
                         break
-                elif len(current) > len(last_text) and current.startswith(last_text):
-                    # Content appended (streaming growth)
-                    chunk = current[len(last_text):]
-                    last_text = current
+                elif len(full_current) > len(last_text) and full_current.startswith(last_text):
+                    chunk = full_current[len(last_text):]
+                    last_text = full_current
                     stable_polls = 0
                     chunk = clean_dom_artifacts(chunk)
-                    if chunk.strip() and not any(c in chunk for c in RISKY):
+                    if chunk.strip() and not (not has_tools and any(c in chunk for c in RISKY)):
                         sent += chunk
                         yield chunk
                 else:
-                    # Content replaced or shrunk (DeepSeek re-rendered) — yield full new text
-                    last_text = current
+                    last_text = full_current
                     stable_polls = 0
-                    cleaned = clean_dom_artifacts(current)
+                    cleaned = clean_dom_artifacts(full_current)
                     if cleaned.strip() and cleaned.strip() != clean_dom_artifacts(baseline_text).strip():
                         sent = cleaned
                         yield cleaned
@@ -669,14 +672,22 @@ class DeepSeekDriver:
                     if stable_polls >= 20:
                         break
 
-            # Wait briefly for remaining WS frames to arrive
-            await asyncio.sleep(1.0)
+            # Wait briefly for response to complete
+            await asyncio.sleep(2.0)
 
-            # Build authoritative final text from accumulated WebSocket SSE frames
-            ws_sse = "\n".join(self.ws_frames) if self.ws_frames else ""
-            final_net = build_openai_text(ws_sse) if ws_sse else ""
+            # Try to get full SSE body via CDP Network.getResponseBody
+            final_net = ""
+            if self.cdp and "chat_completion" in self._cdp_response_ids:
+                try:
+                    req_id = self._cdp_response_ids.pop("chat_completion")
+                    result = await self.cdp.send("Network.getResponseBody", {"requestId": req_id})
+                    body = result.get("body", "")
+                    if body:
+                        final_net = build_openai_text(body)
+                except Exception:
+                    pass
 
-            # If WS capture produced more than DOM streaming sent, yield the tail
+            # If network capture produced more than DOM streaming sent, yield the tail
             self.last_network_text = final_net
             if final_net and len(final_net) > len(sent):
                 net_tail = final_net[len(sent):] if final_net.startswith(sent) else final_net
@@ -685,18 +696,6 @@ class DeepSeekDriver:
         except Exception:
             pass
         finally:
-            pass
-
-    @staticmethod
-    async def _capture(response, fut):
-        try:
-            if not response.ok:
-                return
-            body = await response.body()
-            if not body:
-                return
-            fut.set_result(body)
-        except Exception:
             pass
 
     async def close(self):
@@ -1079,48 +1078,22 @@ async def chat_completions(request: Request):
                         await driver.new_chat()
                         await driver.select_model(label)
                         chat_turn_count = 0
-                        # role frame first
                     yield sse({"role": "assistant"})
 
+                    # Buffer ALL chunks — classify the full response before yielding content
                     buffered = []
-                    classified_tool = False
-                    decided = False
-
-                    async for piece in driver.send_and_stream(full_message):
+                    async for piece in driver.send_and_stream(full_message, has_tools=bool(tools)):
                         buffered.append(piece)
-                        joined_head = "".join(buffered)
-
-                        if not decided:
-                            h = joined_head.lstrip()
-                            if not h:
-                                continue
-                            if h.startswith("```") or h.startswith('{'):
-                                classified_tool = True
-                                decided = True
-                            elif h[0] != '`' and h[0] != '{':
-                                decided = True
-
-                        # Narration allowed before the block - hide everything from fence onward
-                        # Scan FULL head - JSON can be long (big commands)
-                        if not classified_tool and (
-                            '```' in joined_head
-                            or '\n{' in joined_head
-                            or re.search(r'\{\s*"name"', joined_head[20:])
-                        ):
-                            classified_tool = True
-
-                        if decided and not classified_tool:
-                            yield sse({"content": piece})
 
                     full_text = "".join(buffered)
 
-                    # Network capture stored for tool call parsing / non-streaming
-                    # DOM streaming already sent chunks to client
+                    # Network capture is more reliable for tool call parsing
                     net_text = getattr(driver, 'last_network_text', '')
-                    # Use network text for tool call parsing (it's more reliable)
                     if net_text and len(net_text) > len(full_text):
                         full_text = net_text
 
+                    # Tool call classification (post-streaming)
+                    classified_tool = bool(re.search(r'```(?:json)?\s*\{', full_text) or re.search(r'\{\s*"name"', full_text))
                     if tools and not parse_tool_calls(full_text):
                         salvaged = salvage_json_text(full_text)
                         if salvaged != full_text:
@@ -1142,7 +1115,6 @@ async def chat_completions(request: Request):
                                 t2s = salvage_json_text(t2)
                                 if parse_tool_calls(t2s):
                                     full_text = t2s
-                                    buffered.append(t2s)
                         except Exception:
                             pass
 
@@ -1161,15 +1133,13 @@ async def chat_completions(request: Request):
                         yield sse({"tool_calls": tc_list})
                         yield sse({}, finish="tool_calls")
                     elif tools and classified_tool:
-                        # Looked like a tool attempt but unusable -> show narration ONLY.
-                        # NEVER dump the raw {"name"...} payload into chat.
+                        # Looked like a tool attempt but unusable -> show narration ONLY
                         prose = re.split(r'\{\s*"name"', remove_tool_calls(full_text))[0].strip()
                         if prose:
                             yield sse({"content": prose})
                         yield sse({}, finish="stop")
                     else:
-                        if not decided and full_text.strip():
-                            yield sse({"content": full_text})
+                        yield sse({"content": full_text})
                         yield sse({}, finish="stop")
 
                     yield "data: [DONE]\n\n"
@@ -1207,8 +1177,8 @@ async def chat_completions(request: Request):
                 status_code=500,
             )
 
-    text = build_openai_text(raw)
-    LAST_RAW["body"] = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+    text = raw  # send_and_capture returns clean text via send_and_stream
+    LAST_RAW["body"] = raw
 
     # Anti-hallucination: model narrated an action without using <_call> -> force format retry
     if tools and not parse_tool_calls(text):
@@ -1223,8 +1193,7 @@ async def chat_completions(request: Request):
             )
             async with request_lock:
                 try:
-                    raw2 = await driver.send_and_capture(nudge)
-                    t2 = build_openai_text(raw2)
+                    t2 = await driver.send_and_capture(nudge)
                     if t2 and parse_tool_calls(t2):
                         text = t2
                 except Exception:
@@ -1319,8 +1288,7 @@ async def chat_completions(request: Request):
         )
         async with request_lock:
             try:
-                raw2 = await driver.send_and_capture(follow_up)
-                t2 = build_openai_text(raw2)
+                t2 = await driver.send_and_capture(follow_up)
                 if t2:
                     text = remove_tool_calls(t2) or t2
             except Exception:
