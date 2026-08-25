@@ -293,7 +293,6 @@ def build_tool_prompt(tools: list) -> str:
     if not tools:
         return ""
 
-    # ponytail: 40+ tool descriptions bury the format rules -> model narrates instead
     lines = []
     for tool in tools[:15]:
         func = tool.get("function", {})
@@ -305,23 +304,19 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
-    return f"""You are a coding agent connected to a computer. You MUST act through tools - NEVER claim you did something yourself.
-
-To use a tool: first write ONE short sentence announcing the action (e.g. "Let me read the file first."), then output EXACTLY this block:
+    return f"""Reply with a tool call using this exact format:
 
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
 ```
 
-Then STOP. The system runs it and returns the real result.
-
-TOOLS:
+TOOLS (use exactly these names):
 {chr(10).join(lines)}
 
-CRITICAL RULES:
-- File arguments MUST be RELATIVE paths like "src/app.js" - NEVER absolute paths
-- One tool call per reply; after results come back, continue or answer
-- Never say "done" unless a tool result confirmed it"""
+RULES:
+- One tool call per reply
+- File paths MUST be relative
+- Never narrate actions, just call the tool"""
 
 
 def parse_tool_calls(text: str) -> list:
@@ -993,6 +988,17 @@ async def chat_completions(request: Request):
     stream = bool(data.get("stream", False))
     tools = data.get("tools", [])
 
+    # Debug: log incoming request structure
+    print(f"REQUEST: model={model} stream={stream} tools={len(tools)} msgs={len(messages)}", flush=True)
+    for i, m in enumerate(messages[-3:]):
+        role = m.get("role", "")
+        content = str(m.get("content", ""))[:200]
+        print(f"  msg[{i}]: role={role} content={content[:100]}...", flush=True)
+    if tools:
+        for t in tools[:5]:
+            fn = t.get("function", {})
+            print(f"  tool: {fn.get('name', '?')}", flush=True)
+
     # Build conversation history (skip system prompts - they are huge and useless here)
     # Truncate to stay under DeepSeek web timeout
     MAX_HISTORY = 12
@@ -1014,6 +1020,8 @@ async def chat_completions(request: Request):
 
     # Build the prompt
     tool_prompt = build_tool_prompt(tools) if tools else ""
+    if tool_prompt:
+        print(f"TOOL_PROMPT ({len(tool_prompt)} chars): {tool_prompt[:300]}...", flush=True)
 
     # Create the full message with history
     full_message = ""
@@ -1033,8 +1041,13 @@ async def chat_completions(request: Request):
         full_message += '\n\nREMINDER: If an action is needed, reply ONLY with the ```json tool block. Never narrate actions as text.'
 
     # Auto-inject PROJECT_LOG protocol on first message of each session
-    if len(history_parts) <= 1:
-        full_message = PROJECT_LOG_INSTRUCTION + "\n\n" + full_message
+    # Disabled: confuses DeepSeek and prevents tool calls
+    # if len(history_parts) <= 1:
+    #     full_message = PROJECT_LOG_INSTRUCTION + "\n\n" + full_message
+
+    # Debug: log final message
+    print(f"FULL_MSG ({len(full_message)} chars):", flush=True)
+    print(full_message[:500], flush=True)
 
     # Hard cap - DeepSeek web UI times out with long messages (~12K safe limit)
     MAX_MSG_LEN = 12000
