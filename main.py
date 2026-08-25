@@ -734,7 +734,7 @@ driver = None
 tool_executor = None
 request_lock = asyncio.Lock()
 chat_turn_count = 0
-MAX_TURNS_PER_CHAT = 6
+MAX_TURNS_PER_CHAT = 15
 last_task_head = ""
 # Stateless mode: fresh web chat per request (true API semantics). Slower (~+2s/call).
 STATELESS = os.getenv("DEEPSEEK_STATELESS", "0") == "1"
@@ -990,9 +990,8 @@ async def chat_completions(request: Request):
     tools = data.get("tools", [])
 
     # Build conversation history (skip system prompts - they are huge and useless here)
-    # Aggressively truncate to stay under DeepSeek web timeout
-    MAX_CONTENT_LEN = 2000
-    MAX_HISTORY = 6
+    # Truncate to stay under DeepSeek web timeout
+    MAX_HISTORY = 12
     history_parts = []
     for m in messages[-MAX_HISTORY:]:
         role = m.get("role", "")
@@ -1005,9 +1004,9 @@ async def chat_completions(request: Request):
             history_parts.append(f"[User]: {content}")
         elif role == "assistant":
             if content:
-                history_parts.append(f"[Assistant]: {content[:800]}")
+                history_parts.append(f"[Assistant]: {content[:2000]}")
         elif role == "tool":
-            history_parts.append(f"[Tool Result]: {str(content)[:500]}")
+            history_parts.append(f"[Tool Result]: {str(content)[:2000]}")
 
     # Build the prompt
     tool_prompt = build_tool_prompt(tools) if tools else ""
@@ -1033,8 +1032,8 @@ async def chat_completions(request: Request):
     if len(history_parts) <= 1:
         full_message = PROJECT_LOG_INSTRUCTION + "\n\n" + full_message
 
-    # Hard cap - DeepSeek web UI times out with long messages (~8K safe limit)
-    MAX_MSG_LEN = 8000
+    # Hard cap - DeepSeek web UI times out with long messages (~12K safe limit)
+    MAX_MSG_LEN = 12000
     if len(full_message) > MAX_MSG_LEN:
         # Keep tool prompt + current message, trim history
         if tool_prompt and len(full_message) > MAX_MSG_LEN:
