@@ -636,8 +636,8 @@ class DeepSeekDriver:
                 final_net = ""
             final = final_net if len(final_net) >= len(last_text) else last_text
 
-            # Reconcile: network capture is authoritative, but only yield what's truly new
-            # Store for caller to check completeness
+            # Reconcile: network capture stored for caller, no yield here
+            # DOM streaming already sent chunks to client — no duplication
             self.last_network_text = final_net
         finally:
             self.page.remove_listener("response", on_response_capture)
