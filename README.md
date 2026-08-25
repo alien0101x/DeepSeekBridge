@@ -195,32 +195,9 @@ Use these settings:
 python bridge-status.py --start
 ```
 
-### Google Antigravity
+### Antigravity
 
-1. Open Antigravity settings
-2. Add custom model provider:
-   - Provider: `OpenAI Compatible`
-   - Base URL: `http://localhost:8084/v1`
-   - API Key: `any`
-3. Select `deepseek-chat` or `deepseek-reasoner`
-
-### Claude Code
-
-1. Open Claude Code settings
-2. Add custom model:
-   - Provider: `OpenAI Compatible`
-   - Base URL: `http://localhost:8084/v1`
-   - API Key: `any`
-3. Select `deepseek-chat` or `deepseek-reasoner`
-
-### OpenAI Codex
-
-1. Open Codex settings
-2. Add custom model:
-   - Provider: `OpenAI Compatible`
-   - Base URL: `http://localhost:8084/v1`
-   - API Key: `any`
-3. Select `deepseek-chat` or `deepseek-reasoner`
+> **Note:** Antigravity uses its own cloud-based AI backend. It does not support custom OpenAI-compatible providers. Use Cursor, Cline, or Continue instead.
 
 ### Windsurf (Codeium)
 
@@ -301,13 +278,9 @@ python bridge-status.py --start
    - API Key: `any`
 3. Select `deepseek-chat` or `deepseek-reasoner`
 
-### ChatGPT Desktop (with custom endpoint)
+### ChatGPT Desktop
 
-1. Open ChatGPT Desktop settings
-2. Add custom API endpoint:
-   - Base URL: `http://localhost:8084/v1`
-   - API Key: `any`
-3. Select `deepseek-chat` or `deepseek-reasoner`
+> **Note:** ChatGPT Desktop is locked to OpenAI models only. Use Cursor, Cline, or Continue instead.
 
 ### Model Mapping
 
