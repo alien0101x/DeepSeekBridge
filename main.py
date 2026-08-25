@@ -89,7 +89,7 @@ MODEL_MAP = {
     "deepseek-r1": "Expert",
 }
 
-# Tool definitions that OpenCode sends
+# Tool definitions that AI agents send
 TOOL_SCHEMAS = {}
 
 
@@ -1168,7 +1168,7 @@ async def chat_completions(request: Request):
                 text = salvaged
 
     if tool_calls and tools:
-        # Client sent tools -> hand calls back to the client (OpenCode executes them)
+        # Client sent tools -> hand calls back to the client (AI agent executes them)
         cleaned = remove_tool_calls(text)
         tc_list = []
         for i, c in enumerate(tool_calls):

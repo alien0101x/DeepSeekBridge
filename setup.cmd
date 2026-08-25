@@ -33,7 +33,7 @@ echo NEXT STEPS:
 echo 1. Double-click "DeepSeekBridge" on your desktop
 echo 2. Chrome will open - login to chat.deepseek.com
 echo 3. After login, the bridge is ready to use
-echo 4. Open OpenCode - you can now use deepseek/deepseek-chat
+echo 4. Open your AI agent - you can now use deepseek/deepseek-chat
 echo.
 echo Your login is saved - you only need to login once!
 echo.

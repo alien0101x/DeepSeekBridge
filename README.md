@@ -45,7 +45,7 @@ python bridge-status.py --start
 python bridge-status.py --wait
 ```
 
-**For OpenCode users:** The plugin auto-starts the bridge when needed.
+**For AI agent users:** The plugin auto-starts the bridge when needed.
 
 4. After setup, just double-click `DeepSeekBridge` on desktop.
 
@@ -108,37 +108,6 @@ python main.py
 ## Usage with AI Agents
 
 This bridge works with **any OpenAI-compatible tool**. Here are instructions for popular AI agents:
-
-### OpenCode
-
-Add to your `opencode.json`:
-
-```json
-{
-  "provider": {
-    "deepseek": {
-      "name": "DeepSeek",
-      "api": "openai",
-      "options": {
-        "apiKey": "any",
-        "baseURL": "http://localhost:8084/v1"
-      },
-      "models": {
-        "deepseek-chat": {
-          "id": "deepseek-chat",
-          "name": "DeepSeek V3",
-          "family": "deepseek"
-        },
-        "deepseek-reasoner": {
-          "id": "deepseek-reasoner",
-          "name": "DeepSeek R1",
-          "family": "deepseek"
-        }
-      }
-    }
-  }
-}
-```
 
 ### Cursor
 

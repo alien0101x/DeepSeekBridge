@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DeepSeekBridge Status Checker
-Works with ANY AI agent (OpenCode, Cursor, Cline, Continue, etc.)
+Works with ANY AI agent (Cursor, Cline, Continue, etc.)
 
 Usage:
     python bridge-status.py          # Check status
