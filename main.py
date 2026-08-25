@@ -418,15 +418,14 @@ class DeepSeekDriver:
 
     async def start(self):
         self.pw = await async_playwright().__aenter__()
-        # DEEPSEEK_SHOW_BROWSER=1 -> show Chrome window (for first-time login)
-        show = os.environ.get("DEEPSEEK_SHOW_BROWSER", "0") == "1"
+        # Chrome visible by default. Set DEEPSEEK_HIDE_BROWSER=1 to hide.
         self.ctx = await self.pw.chromium.launch_persistent_context(
             PROFILE,
             headless=False,
             # Off-screen by default; set DEEPSEEK_SHOW_BROWSER=1 to show
             args=[
                 "--disable-blink-features=AutomationControlled",
-                f"--window-position={'100,100' if show else '-32000,-32000'}",
+                f"--window-position={'-32000,-32000' if os.environ.get('DEEPSEEK_HIDE_BROWSER', '0') == '1' else '100,100'}",
                 "--window-size=1280,900",
             ],
         )
