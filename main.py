@@ -404,9 +404,9 @@ def remove_tool_calls(text: str) -> str:
 def clean_dom_artifacts(text: str) -> str:
     """Remove trailing UI artifacts from DOM-extracted text."""
     text = re.sub(r'[\s]*d[\?\uFFFD\ufffdY`<>]{1,8}[\s]*$', '', text)
-    # Clean leading code block UI artifacts (e.g. "jsonCopyDownload", "pythonCopy")
-    text = re.sub(r'^(json|python|javascript|typescript|bash|shell|html|css|copy|download)+', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'^(Copy|Download)+', '', text, flags=re.IGNORECASE)
+    # Clean leading/trailing code block UI artifacts (e.g. "jsonCopyDownload", "pythonCopy")
+    text = re.sub(r'^(json|python|javascript|typescript|bash|shell|html|css|copy|download|Copy|Download)+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'(jsonCopyDownload|pythonCopy|javascriptCopy|typescriptCopy|bashCopy|shellCopy|htmlCopy|cssCopy|Copy|Download)+\s*$', '', text, flags=re.IGNORECASE)
     return text
 
 
@@ -565,10 +565,10 @@ class DeepSeekDriver:
                 else:
                     raise RuntimeError("Could not send message - page unresponsive")
 
-    async def send_and_capture(self, text):
+    async def send_and_capture(self, text, has_tools=False):
         """Non-streaming: delegate to send_and_stream and join the chunks."""
         chunks = []
-        async for piece in self.send_and_stream(text):
+        async for piece in self.send_and_stream(text, has_tools=has_tools):
             chunks.append(piece)
         return "".join(chunks)
 
@@ -1092,6 +1092,8 @@ async def chat_completions(request: Request):
                     if net_text and len(net_text) > len(full_text):
                         full_text = net_text
 
+                    full_text = clean_dom_artifacts(full_text)
+
                     # Tool call classification (post-streaming)
                     classified_tool = bool(re.search(r'```(?:json)?\s*\{', full_text) or re.search(r'\{\s*"name"', full_text))
                     if tools and not parse_tool_calls(full_text):
@@ -1168,7 +1170,7 @@ async def chat_completions(request: Request):
                 await driver.new_chat()
                 await driver.select_model(label)
                 chat_turn_count = 0
-            raw = await driver.send_and_capture(full_message)
+            raw = await driver.send_and_capture(full_message, has_tools=bool(tools))
             chat_turn_count += 1
         except Exception as e:
             traceback.print_exc()
@@ -1177,7 +1179,7 @@ async def chat_completions(request: Request):
                 status_code=500,
             )
 
-    text = raw  # send_and_capture returns clean text via send_and_stream
+    text = clean_dom_artifacts(raw)  # send_and_capture returns clean text via send_and_stream
     LAST_RAW["body"] = raw
 
     # Anti-hallucination: model narrated an action without using <_call> -> force format retry
@@ -1193,7 +1195,7 @@ async def chat_completions(request: Request):
             )
             async with request_lock:
                 try:
-                    t2 = await driver.send_and_capture(nudge)
+                    t2 = await driver.send_and_capture(nudge, has_tools=True)
                     if t2 and parse_tool_calls(t2):
                         text = t2
                 except Exception:
@@ -1213,7 +1215,7 @@ async def chat_completions(request: Request):
 
     if tool_calls and tools:
         # Client sent tools -> hand calls back to the client (AI agent executes them)
-        cleaned = remove_tool_calls(text)
+        cleaned = clean_dom_artifacts(remove_tool_calls(text))
         tc_list = []
         for i, c in enumerate(tool_calls):
             tc_list.append({
@@ -1288,7 +1290,7 @@ async def chat_completions(request: Request):
         )
         async with request_lock:
             try:
-                t2 = await driver.send_and_capture(follow_up)
+                t2 = await driver.send_and_capture(follow_up, has_tools=True)
                 if t2:
                     text = remove_tool_calls(t2) or t2
             except Exception:
