@@ -653,7 +653,7 @@ class DeepSeekDriver:
 
                 if full_current == last_text:
                     stable_polls += 1
-                    if stable_polls >= 20:
+                    if stable_polls >= 40:
                         break
                 elif len(full_current) > len(last_text) and full_current.startswith(last_text):
                     chunk = full_current[len(last_text):]
@@ -677,7 +677,7 @@ class DeepSeekDriver:
                         else:
                             sent = cleaned
                     stable_polls += 1
-                    if stable_polls >= 20:
+                    if stable_polls >= 40:
                         break
 
             # Wait briefly for response to complete
