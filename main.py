@@ -638,8 +638,23 @@ class DeepSeekDriver:
 
             # Reconcile against EXACTLY what was sent - word loss impossible
             if dom_abandoned:
-                if final.strip() and final != sent:
-                    yield final
+                if final.strip() and final.strip() != sent.strip():
+                    # Only yield the part we haven't already sent (avoid duplication)
+                    if final.strip().startswith(sent.strip()):
+                        rest = final[len(sent):]
+                        if rest.strip():
+                            yield rest
+                    else:
+                        # Network text is different from DOM - yield only the diff
+                        shorter = sent if len(sent) < len(final) else final
+                        longer = final if len(sent) < len(final) else sent
+                        if longer.strip().startswith(shorter.strip()):
+                            rest = longer[len(shorter):]
+                            if rest.strip():
+                                yield rest
+                        else:
+                            # Complete mismatch - yield network text as canonical
+                            yield final
             elif final and final.startswith(sent):
                 rest = final[len(sent):]
                 if rest.strip():
