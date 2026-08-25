@@ -83,7 +83,7 @@ DeepSeekBridge v2 supports **function calling** - DeepSeek can now execute tools
 
 ### How It Works
 
-1. OpenCode sends tool definitions with your request
+1. AI agent sends tool definitions with your request
 2. DeepSeekBridge converts tools to natural language instructions
 3. DeepSeek responds with `<tool_call>` tags when it wants to use a tool
 4. The bridge executes the tool locally
