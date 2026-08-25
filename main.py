@@ -332,10 +332,10 @@ TOOLS:
 
 
 def _strip_json_fragment(text: str, has_tools: bool) -> str:
-    """Drop truncated/broken JSON fragments from final answers (e.g. '{"')."""
+    """Drop truncated/broken JSON fragments and failed tool attempts from final answers."""
     if has_tools:
         t = (text or "").strip()
-        if t.startswith("{") and not parse_tool_calls(t):
+        if (t.startswith("{") or '"arguments"' in t or '"filePath"' in t) and not parse_tool_calls(t):
             return ""
     return text or ""
 
@@ -350,7 +350,11 @@ def _repair_broken_json(fragment: str):
         fragment,
         re.DOTALL,
     )
-    args = {k: v for k, v in pairs if k != "name"}
+    def _unesc(s):
+        # Model intended JSON escapes; strict parse died on quotes, apply the rest manually.
+        return (s.replace('\\r\\n', '\n').replace('\\n', '\n').replace('\\t', '\t')
+                 .replace("\\'", "'").replace('\\"', '"').replace('\\\\', '\\'))
+    args = {k: _unesc(v) for k, v in pairs if k != "name"}
     if not args:
         return None
     return {"name": name_m.group(1), "arguments": args}
@@ -500,7 +504,7 @@ class DeepSeekDriver:
                 url = resp.get("url", "")
                 req_id = params.get("requestId", "")
                 if "chat/completion" in url:
-                    self._cdp_response_ids["chat_completion"] = req_id
+                    self._cdp_response_ids.setdefault("chat_completion", []).append(req_id)
 
             self.cdp.on("Network.responseReceived", on_response_received)
         except Exception:
@@ -672,7 +676,25 @@ class DeepSeekDriver:
         chunks = []
         async for piece in self.send_and_stream(text, has_tools=has_tools):
             chunks.append(piece)
-        return "".join(chunks)
+        return self.take_network_text("".join(chunks))
+
+    def take_network_text(self, fallback: str, has_tools: bool = False) -> str:
+        """Pristine response text: CDP capture first, then raw <pre><code> textContent
+        (unrendered markdown, preserves indentation/underscores), else DOM fallback."""
+        net = (getattr(self, "_final_net", "") or "").strip()
+        self._final_net = ""
+        sane = bool(net) and len(net) > 20 and (
+            not has_tools or parse_tool_calls(net) or '"arguments"' not in net
+        )
+        if sane:
+            return net
+        code = (getattr(self, "_last_code_text", "") or "").strip()
+        self._last_code_text = ""
+        if has_tools and len(code) > 20:
+            print(f"[capture] using raw code block ({len(code)} chars, net={len(net)})", flush=True)
+            return code if parse_tool_calls(code) else salvage_json_text(code)
+        print(f"[capture] fell back to DOM text (net={len(net)}, code={len(code)})", flush=True)
+        return fallback
 
     async def send_and_stream(self, text, has_tools=False):
         """Send and yield live chunks via DOM polling."""
@@ -713,6 +735,7 @@ class DeepSeekDriver:
 
             await self._type_and_send(text)
 
+            self._last_code_text = ""
             last_text = baseline_text
             sent = ""
             stable_polls = 0
@@ -730,6 +753,8 @@ class DeepSeekDriver:
                 if has_tools:
                     try:
                         code_text = await self.page.evaluate(extract_code_js)
+                        if code_text and len(code_text) > len(getattr(self, "_last_code_text", "")):
+                            self._last_code_text = code_text
                     except Exception:
                         pass
 
@@ -779,20 +804,35 @@ class DeepSeekDriver:
             # Wait briefly for response to complete
             await asyncio.sleep(2.0)
 
-            # Try to get full SSE body via CDP Network.getResponseBody
+            # Try to get full SSE body via CDP Network.getResponseBody.
+            # DeepSeek fires several chat/completion XHRs per send; pick the LARGEST body
+            # (the real completion) rather than whichever response arrived last.
             final_net = ""
-            if self.cdp and "chat_completion" in self._cdp_response_ids:
-                try:
-                    req_id = self._cdp_response_ids.pop("chat_completion")
-                    result = await self.cdp.send("Network.getResponseBody", {"requestId": req_id})
-                    body = result.get("body", "")
-                    if body:
-                        final_net = build_openai_text(body)
-                except Exception:
-                    pass
+            req_ids = self._cdp_response_ids.pop("chat_completion", [])
+            if self.cdp and req_ids:
+                best_body = ""
+                for rid in req_ids:
+                    try:
+                        result = await self.cdp.send("Network.getResponseBody", {"requestId": rid})
+                        body = result.get("body", "")
+                        print(f"[cdp] rid={rid} body_len={len(body)} head={body[:60]!r}", flush=True)
+                        if body and len(body) > len(best_body):
+                            best_body = body
+                    except Exception as e:
+                        print(f"[cdp] rid={rid} error: {e}", flush=True)
+                        continue
+                if best_body:
+                    try:
+                        (Path(__file__).parent / "last_sse.txt").write_text(best_body, encoding="utf-8")
+                    except Exception:
+                        pass
+                    final_net = build_openai_text(best_body)
+            else:
+                print(f"[cdp] no candidates (cdp={bool(self.cdp)}, ids={len(req_ids)})", flush=True)
 
             # If network capture produced more than DOM streaming sent, yield the tail
             self.last_network_text = final_net
+            self._final_net = final_net
             if final_net and len(final_net) > len(sent):
                 net_tail = final_net[len(sent):] if final_net.startswith(sent) else final_net
                 if net_tail.strip():
@@ -840,8 +880,9 @@ request_lock = asyncio.Lock()
 chat_turn_count = 0
 MAX_TURNS_PER_CHAT = 15
 last_task_head = ""
-# Stateless mode: fresh web chat per request (true API semantics). Slower (~+2s/call).
-STATELESS = os.getenv("DEEPSEEK_STATELESS", "0") == "1"
+# Stateless mode: fresh web chat per request. Default ON: agent clients (OpenCode etc.)
+# resend full history each call, and chat reuse leaks old responses into captures.
+STATELESS = os.getenv("DEEPSEEK_STATELESS", "1") == "1"
 
 
 @asynccontextmanager
@@ -903,10 +944,13 @@ LAST_RAW = {"body": ""}
 
 
 def build_openai_text(raw_sse):
-    """Rebuild answer text from DeepSeek SSE.
-    DeepSeek sends full snapshots AND deltas. If snapshot exists, skip deltas."""
-    # Pass 1: detect if any full snapshot exists
-    has_snapshot = False
+    """Rebuild answer text from DeepSeek SSE (JSON-patch format).
+
+    Handles: full snapshots ({"v":{"response":{"fragments":[...]}}}),
+    patch ops ({"p":"response/fragments/-1/content","o":"APPEND","v":"..."}),
+    and bare deltas ({"v":"..."}).
+    """
+    frags = []  # [{type, content}]
     for line in raw_sse.splitlines():
         line = line.strip()
         if not line.startswith("data:"):
@@ -918,64 +962,33 @@ def build_openai_text(raw_sse):
             obj = json.loads(payload)
         except Exception:
             continue
-        v = obj.get("v")
-        if isinstance(v, dict):
-            frags = v.get("response", {}).get("fragments") if v.get("response") else None
-            if frags:
-                has_snapshot = True
-                break
-
-    parts = []
-    cur_type = "RESPONSE"
-    seen = set()
-    for line in raw_sse.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:"):].strip()
-        if payload in ("", "[DONE]"):
-            continue
-        try:
-            obj = json.loads(payload)
-        except Exception:
+        if not isinstance(obj, dict):
             continue
         v = obj.get("v")
-
-        frags = None
-        if isinstance(v, dict):
-            frags = v.get("response", {}).get("fragments")
-        elif isinstance(v, list):
-            frags = v
-        if frags:
-            cur_type = frags[-1].get("type", cur_type)
-            if has_snapshot:
-                for f in frags:
-                    if isinstance(f, dict) and f.get("type") == "RESPONSE" and f.get("content"):
-                        c = f["content"]
-                        if c not in seen:
-                            seen.add(c)
-                            parts.append(c)
-            continue
-
-        # Skip deltas if snapshots exist
-        if has_snapshot:
-            continue
-
         p = obj.get("p", "")
-        if isinstance(p, str) and "fragments/-1" in p:
-            if isinstance(v, str) and cur_type == "RESPONSE":
-                parts.append(v)
+        o = obj.get("o", "")
+        if isinstance(v, dict) and isinstance(v.get("response"), dict):
+            fs = v["response"].get("fragments")
+            if isinstance(fs, list):
+                frags = [
+                    {"type": f.get("type", "RESPONSE"), "content": f.get("content", "") or ""}
+                    for f in fs if isinstance(f, dict)
+                ]
+                continue
+        if isinstance(v, str) and not p:
+            if not frags or frags[-1]["type"] != "RESPONSE":
+                frags.append({"type": "RESPONSE", "content": ""})
+            frags[-1]["content"] += v
             continue
+        if isinstance(v, str) and p.endswith("/content") and o in ("APPEND", "SET", "REPLACE"):
+            if not frags:
+                frags.append({"type": "RESPONSE", "content": ""})
+            if o == "APPEND":
+                frags[-1]["content"] += v
+            else:
+                frags[-1]["content"] = v
 
-        if isinstance(v, str) and "p" not in obj:
-            if cur_type == "RESPONSE":
-                parts.append(v)
-
-    text = "".join(parts)
-    # Clean trailing UI artifacts: d???, dY`, etc.
-    text = re.sub(r'[\s]*d[\?\uFFFD\ufffdY`<>]{1,8}[\s]*$', '', text)
-    return text
-
+    return "".join(f["content"] for f in frags if f["type"] == "RESPONSE")
 
 @app.get("/v1/models")
 async def models():
@@ -1208,12 +1221,7 @@ async def chat_completions(request: Request):
                     async for piece in driver.send_and_stream(full_message, has_tools=bool(tools)):
                         buffered.append(piece)
 
-                    full_text = "".join(buffered)
-
-                    # Network capture is more reliable for tool call parsing
-                    net_text = getattr(driver, 'last_network_text', '')
-                    if net_text and len(net_text) > len(full_text):
-                        full_text = net_text
+                    full_text = driver.take_network_text("".join(buffered))
                     print(f"DEBUG full_text ({len(full_text)} chars): {full_text[:300]}", flush=True)
 
                     full_text = clean_dom_artifacts(full_text)
@@ -1241,7 +1249,7 @@ async def chat_completions(request: Request):
                             nudged = []
                             async for p in driver.send_and_stream(nudge):
                                 nudged.append(p)
-                            t2 = "".join(nudged)
+                            t2 = driver.take_network_text("".join(nudged))
                             if t2:
                                 t2s = salvage_json_text(t2)
                                 if parse_tool_calls(t2s):
@@ -1259,7 +1267,7 @@ async def chat_completions(request: Request):
                                 "Your previous JSON block was incomplete/truncated. Repeat the FULL tool call JSON block now, nothing else."
                             ):
                                 nudged.append(p)
-                            t2 = clean_dom_artifacts("".join(nudged))
+                            t2 = driver.take_network_text("".join(nudged))
                             tc2 = [c for c in relativize_tool_paths(parse_tool_calls(t2)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
                             if tc2:
                                 usable = tc2
@@ -1283,9 +1291,8 @@ async def chat_completions(request: Request):
                             nudged = []
                             async for p in driver.send_and_stream(follow_up):
                                 nudged.append(p)
-                            full_text = "".join(nudged)
+                            full_text = driver.take_network_text("".join(nudged))
                             if full_text:
-                                full_text = clean_dom_artifacts(full_text)
                                 tool_calls = relativize_tool_paths(parse_tool_calls(full_text))
                             else:
                                 break
@@ -1307,6 +1314,7 @@ async def chat_completions(request: Request):
                     elif tools and classified_tool:
                         # Looked like a tool attempt but unusable -> show narration ONLY
                         prose = re.split(r'\{\s*"name"', remove_tool_calls(full_text))[0].strip()
+                        prose = _strip_json_fragment(prose, True)
                         if prose:
                             yield sse({"content": prose})
                         yield sse({}, finish="stop")

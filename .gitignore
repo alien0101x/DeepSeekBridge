@@ -4,6 +4,8 @@ browser_profile/
 # Logs and screenshots
 bridge.log
 page.png
+last_sse.txt
+think_off.json
 
 # Python
 __pycache__/
