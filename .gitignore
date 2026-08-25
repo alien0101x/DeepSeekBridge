@@ -1,6 +1,10 @@
 # Browser profile (contains login tokens - DO NOT COMMIT)
 browser_profile/
 
+# Logs and screenshots
+bridge.log
+page.png
+
 # Python
 __pycache__/
 *.pyc
