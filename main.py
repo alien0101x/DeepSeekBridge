@@ -401,6 +401,12 @@ def remove_tool_calls(text: str) -> str:
     return text.strip()
 
 
+def clean_dom_artifacts(text: str) -> str:
+    """Remove trailing UI artifacts from DOM-extracted text."""
+    text = re.sub(r'[\s]*d[\?\uFFFD\ufffdY`<>]{1,8}[\s]*$', '', text)
+    return text
+
+
 class DeepSeekDriver:
     def __init__(self):
         self.pw = None
@@ -408,6 +414,7 @@ class DeepSeekDriver:
         self.page = None
         self.ready = False
         self.chat_active = False
+        self.ws_frames = []  # accumulated WebSocket frames for SSE reconstruction
 
     async def start(self):
         self.pw = await async_playwright().__aenter__()
@@ -437,6 +444,22 @@ class DeepSeekDriver:
 
         await self.page.wait_for_selector("textarea", timeout=30000)
         self.ready = True
+
+        # Register WebSocket listener early — DeepSeek uses WS for SSE
+        def _on_ws(ws):
+            def _on_frame(msg):
+                try:
+                    data = msg.text if hasattr(msg, 'text') else str(msg)
+                    self.ws_frames.append(data)
+                except Exception:
+                    pass
+            ws.on("framereceived", _on_frame)
+
+        try:
+            self.page.on("websocket", _on_ws)
+        except Exception:
+            pass
+
         print("BOOT: success", flush=True)
 
     async def new_chat(self):
@@ -566,90 +589,113 @@ class DeepSeekDriver:
         return raw.decode("utf-8", "replace") if raw else ""
 
     async def send_and_stream(self, text):
-        """Send and yield live chunks via DOM polling; network capture guarantees the final text."""
+        """Send and yield live chunks via DOM polling; WebSocket frames for final text."""
         await self.page.wait_for_selector("textarea", timeout=20000)
 
-        resp_future = asyncio.get_event_loop().create_future()
-
-        def on_response_capture(response):
-            if response.request.method == "POST" and "chat/completion" in response.url:
-                asyncio.ensure_future(self._capture(response, resp_future))
-
-        self.page.on("response", on_response_capture)
+        # Clear accumulated WebSocket frames from previous requests
+        self.ws_frames.clear()
 
         try:
-            await self._type_and_send(text)
-
             extract_js = """() => {
                 const sels = ['.ds-markdown', '[class*="ds-markdown"]', 'div[class*="markdown"]', 'div[class*="message-content"]', 'div[class*="answer"]'];
-                for (const s of sels) {
-                    const els = document.querySelectorAll(s);
-                    if (els.length) { const t = els[els.length - 1].innerText || ''; if (t.trim()) return t; }
+                for (const sels_i of sels) {
+                    const els = document.querySelectorAll(sels_i);
+                    if (els.length > 1) {
+                        const t = els[els.length - 1].innerText || '';
+                        if (t.trim()) return t;
+                    } else if (els.length === 1) {
+                        const el = els[0];
+                        const msgEls = el.querySelectorAll('[class*="message"], [class*="turn"], [class*="block"]');
+                        if (msgEls.length > 1) {
+                            const t = msgEls[msgEls.length - 1].innerText || '';
+                            if (t.trim()) return t;
+                        }
+                        const t = el.innerText || '';
+                        if (t.trim()) return t;
+                    }
                 }
                 return '';
             }"""
 
-            last_text = ""
-            sent = ""          # exact bytes already streamed to client
-            stable_polls = 0
-            dom_abandoned = False
-            RISKY = ("`", "{", "<", ">", "\u2713", "\u2717", "|")
-            deadline = time.time() + 120  # 2 min timeout for DeepSeek response
+            # Capture baseline BEFORE sending — DOM state includes conversation history
+            try:
+                baseline_text = await self.page.evaluate(extract_js)
+            except Exception:
+                baseline_text = ""
 
+            await self._type_and_send(text)
+
+            last_text = baseline_text
+            sent = ""
+            stable_polls = 0
+            RISKY = ("`", "{", "<", ">", "\u2713", "\u2717", "|")
+            deadline = time.time() + 120
             while time.time() < deadline:
-                if resp_future.done():
-                    break
                 await asyncio.sleep(0.35)
                 try:
                     current = await self.page.evaluate(extract_js)
                 except Exception:
                     continue
 
-                # Code blocks / UI junk / risky renders -> stop previewing
-                if not dom_abandoned and (
+                if (
                     "\nCopy\n" in current or "```" in current
                     or any(c in current for c in RISKY)
                     or len(sent) >= 300
                 ):
-                    dom_abandoned = True
                     break
 
-                if len(current) > len(last_text):
+                if current == last_text:
+                    stable_polls += 1
+                    if stable_polls >= 20:
+                        break
+                elif len(current) > len(last_text) and current.startswith(last_text):
+                    # Content appended (streaming growth)
                     chunk = current[len(last_text):]
                     last_text = current
                     stable_polls = 0
+                    chunk = clean_dom_artifacts(chunk)
                     if chunk.strip() and not any(c in chunk for c in RISKY):
                         sent += chunk
                         yield chunk
-                elif current and current == last_text:
+                else:
+                    # Content replaced or shrunk (DeepSeek re-rendered) — yield full new text
+                    last_text = current
+                    stable_polls = 0
+                    cleaned = clean_dom_artifacts(current)
+                    if cleaned.strip() and cleaned.strip() != clean_dom_artifacts(baseline_text).strip():
+                        sent = cleaned
+                        yield cleaned
                     stable_polls += 1
-                    if stable_polls >= 8:
+                    if stable_polls >= 20:
                         break
 
-            # Authoritative final text: prefer network, but never accept a
-            # truncated capture when DOM saw more.
-            try:
-                raw = await asyncio.wait_for(resp_future, timeout=120)
-                sse_body = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                final_net = build_openai_text(sse_body)
-            except asyncio.TimeoutError:
-                final_net = ""
-            final = final_net if len(final_net) >= len(last_text) else last_text
+            # Wait briefly for remaining WS frames to arrive
+            await asyncio.sleep(1.0)
 
-            # Reconcile: network capture stored for caller, no yield here
-            # DOM streaming already sent chunks to client — no duplication
+            # Build authoritative final text from accumulated WebSocket SSE frames
+            ws_sse = "\n".join(self.ws_frames) if self.ws_frames else ""
+            final_net = build_openai_text(ws_sse) if ws_sse else ""
+
+            # If WS capture produced more than DOM streaming sent, yield the tail
             self.last_network_text = final_net
+            if final_net and len(final_net) > len(sent):
+                net_tail = final_net[len(sent):] if final_net.startswith(sent) else final_net
+                if net_tail.strip():
+                    yield net_tail
+        except Exception:
+            pass
         finally:
-            self.page.remove_listener("response", on_response_capture)
+            pass
 
     @staticmethod
     async def _capture(response, fut):
         try:
             if not response.ok:
-                return  # ignore aborted/failed requests - never trust partial bodies
+                return
             body = await response.body()
-            if fut and not fut.done():
-                fut.set_result(body)
+            if not body:
+                return
+            fut.set_result(body)
         except Exception:
             pass
 
@@ -754,11 +800,10 @@ LAST_RAW = {"body": ""}
 
 
 def build_openai_text(raw_sse):
-    """Rebuild answer text, keeping ONLY RESPONSE fragments (skips THINK).
-    Deduplicates: tracks last appended text to avoid重复 from overlapping SSE events."""
-    parts = []
-    cur_type = "RESPONSE"  # default for legacy/fragment-less streams
-    last_appended = ""  # track last append for dedup
+    """Rebuild answer text from DeepSeek SSE.
+    DeepSeek sends full snapshots AND deltas. If snapshot exists, skip deltas."""
+    # Pass 1: detect if any full snapshot exists
+    has_snapshot = False
     for line in raw_sse.splitlines():
         line = line.strip()
         if not line.startswith("data:"):
@@ -770,48 +815,62 @@ def build_openai_text(raw_sse):
             obj = json.loads(payload)
         except Exception:
             continue
+        v = obj.get("v")
+        if isinstance(v, dict):
+            frags = v.get("response", {}).get("fragments") if v.get("response") else None
+            if frags:
+                has_snapshot = True
+                break
 
+    parts = []
+    cur_type = "RESPONSE"
+    seen = set()
+    for line in raw_sse.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload in ("", "[DONE]"):
+            continue
+        try:
+            obj = json.loads(payload)
+        except Exception:
+            continue
         v = obj.get("v")
 
-        # Full response snapshot (v is dict) or fragment list append (v is list)
         frags = None
         if isinstance(v, dict):
             frags = v.get("response", {}).get("fragments")
         elif isinstance(v, list):
             frags = v
         if frags:
-            if frags:
-                cur_type = frags[-1].get("type", cur_type)
-            for f in frags:
-                if isinstance(f, dict) and f.get("type") == "RESPONSE" and f.get("content"):
-                    c = f["content"]
-                    # Dedup: skip if this is a prefix of what we already have
-                    if c and not last_appended.endswith(c):
-                        parts.append(c)
-                        last_appended = c
+            cur_type = frags[-1].get("type", cur_type)
+            if has_snapshot:
+                for f in frags:
+                    if isinstance(f, dict) and f.get("type") == "RESPONSE" and f.get("content"):
+                        c = f["content"]
+                        if c not in seen:
+                            seen.add(c)
+                            parts.append(c)
             continue
 
-        # Fragment-targeted ops: p contains fragments/-1/...
+        # Skip deltas if snapshots exist
+        if has_snapshot:
+            continue
+
         p = obj.get("p", "")
         if isinstance(p, str) and "fragments/-1" in p:
             if isinstance(v, str) and cur_type == "RESPONSE":
-                if v and not last_appended.endswith(v):
-                    parts.append(v)
-                    last_appended = v
+                parts.append(v)
             continue
 
-        # Bare delta appends belong to the current fragment
         if isinstance(v, str) and "p" not in obj:
             if cur_type == "RESPONSE":
-                if v and not last_appended.endswith(v):
-                    parts.append(v)
-                    last_appended = v
+                parts.append(v)
 
     text = "".join(parts)
-    # Clean trailing garbage from DeepSeek web UI artifacts
-    text = re.sub(r'[\s]*d[\?\uFFFD�]{1,5}[\s]*$', '', text)
-    # Clean mid-text artifacts (e.g. "Hi alienx! d??...")
-    text = re.sub(r'([\w!])\s*d[\?\uFFFD�]{1,5}\s*', r'\1 ', text)
+    # Clean trailing UI artifacts: d???, dY`, etc.
+    text = re.sub(r'[\s]*d[\?\uFFFD\ufffdY`<>]{1,8}[\s]*$', '', text)
     return text
 
 
@@ -1054,21 +1113,13 @@ async def chat_completions(request: Request):
                             yield sse({"content": piece})
 
                     full_text = "".join(buffered)
-                    print("STREAM FULL_TEXT >>>", repr(full_text[:600]), flush=True)
 
-                    # Network capture may have more text than DOM streaming captured
+                    # Network capture stored for tool call parsing / non-streaming
+                    # DOM streaming already sent chunks to client
                     net_text = getattr(driver, 'last_network_text', '')
+                    # Use network text for tool call parsing (it's more reliable)
                     if net_text and len(net_text) > len(full_text):
-                        # Network has more — yield only the tail we missed
-                        if net_text.startswith(full_text):
-                            tail = net_text[len(full_text):]
-                            if tail.strip():
-                                yield sse({"content": tail})
-                                full_text = net_text
-                        elif full_text.strip() and net_text.strip():
-                            # No clean overlap — use network as canonical
-                            yield sse({"content": net_text})
-                            full_text = net_text
+                        full_text = net_text
 
                     if tools and not parse_tool_calls(full_text):
                         salvaged = salvage_json_text(full_text)
