@@ -1,0 +1,5 @@
+{
+  "apiBase": "http://localhost:8084/v1",
+  "apiKey": "any",
+  "models": ["deepseek-chat", "deepseek-reasoner"]
+}

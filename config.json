@@ -1,0 +1,24 @@
+{
+  "provider": {
+    "deepseek": {
+      "name": "DeepSeek",
+      "api": "openai",
+      "options": {
+        "apiKey": "any",
+        "baseURL": "http://localhost:8084/v1"
+      },
+      "models": {
+        "deepseek-chat": {
+          "id": "deepseek-chat",
+          "name": "DeepSeek V3",
+          "family": "deepseek"
+        },
+        "deepseek-reasoner": {
+          "id": "deepseek-reasoner",
+          "name": "DeepSeek R1",
+          "family": "deepseek"
+        }
+      }
+    }
+  }
+}

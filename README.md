@@ -109,6 +109,22 @@ python main.py
 
 This bridge works with **any OpenAI-compatible tool**. Here are instructions for popular AI agents:
 
+### Config Files
+
+Two config files included:
+
+- `config.json` - Full config for agents that support provider/model format
+- `config-simple.json` - Simple config with just base URL and API key
+
+**For agents with config.json support:**
+Copy `config.json` to your agent's config directory.
+
+**For agents with simple config:**
+Copy `config-simple.json` and update your agent's settings:
+- **Base URL:** `http://localhost:8084/v1`
+- **API Key:** `any`
+- **Model:** `deepseek-chat` or `deepseek-reasoner`
+
 ### Cursor
 
 1. Open Cursor Settings → Models
