@@ -636,33 +636,9 @@ class DeepSeekDriver:
                 final_net = ""
             final = final_net if len(final_net) >= len(last_text) else last_text
 
-            # Reconcile: find where DOM-sent text ends in network text, yield remainder
-            if final_net and sent.strip():
-                # Try to find DOM text within network text (fuzzy)
-                net_lower = final.strip()
-                sent_lower = sent.strip()
-                if net_lower.startswith(sent_lower):
-                    # Perfect overlap — yield remainder
-                    rest = final[len(sent):]
-                    if rest.strip():
-                        yield rest
-                elif sent_lower in net_lower:
-                    # DOM text found somewhere in network — yield after it
-                    idx = net_lower.index(sent_lower) + len(sent_lower)
-                    rest = final[idx:]
-                    if rest.strip():
-                        yield rest
-                elif net_lower in sent_lower:
-                    # Network is subset of DOM — nothing to add
-                    pass
-                else:
-                    # No overlap — network is canonical, yield it (client handles)
-                    if final.strip():
-                        yield "\n" + final
-            elif final_net and not sent.strip():
-                # DOM yielded nothing, network has everything
-                if final.strip():
-                    yield final
+            # Reconcile: network capture is authoritative, but only yield what's truly new
+            # Store for caller to check completeness
+            self.last_network_text = final_net
         finally:
             self.page.remove_listener("response", on_response_capture)
 
@@ -1064,6 +1040,20 @@ async def chat_completions(request: Request):
 
                     full_text = "".join(buffered)
                     print("STREAM FULL_TEXT >>>", repr(full_text[:600]), flush=True)
+
+                    # Network capture may have more text than DOM streaming captured
+                    net_text = getattr(driver, 'last_network_text', '')
+                    if net_text and len(net_text) > len(full_text):
+                        # Network has more — yield only the tail we missed
+                        if net_text.startswith(full_text):
+                            tail = net_text[len(full_text):]
+                            if tail.strip():
+                                yield sse({"content": tail})
+                                full_text = net_text
+                        elif full_text.strip() and net_text.strip():
+                            # No clean overlap — use network as canonical
+                            yield sse({"content": net_text})
+                            full_text = net_text
 
                     if tools and not parse_tool_calls(full_text):
                         salvaged = salvage_json_text(full_text)
