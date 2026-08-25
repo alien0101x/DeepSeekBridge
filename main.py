@@ -640,7 +640,6 @@ class DeepSeekDriver:
 
                 if not has_tools and (
                     "\nCopy\n" in current
-                    or len(sent) >= 300
                 ):
                     break
 
