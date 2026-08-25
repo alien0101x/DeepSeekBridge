@@ -754,9 +754,11 @@ LAST_RAW = {"body": ""}
 
 
 def build_openai_text(raw_sse):
-    """Rebuild answer text, keeping ONLY RESPONSE fragments (skips THINK)."""
+    """Rebuild answer text, keeping ONLY RESPONSE fragments (skips THINK).
+    Deduplicates: tracks last appended text to avoid重复 from overlapping SSE events."""
     parts = []
     cur_type = "RESPONSE"  # default for legacy/fragment-less streams
+    last_appended = ""  # track last append for dedup
     for line in raw_sse.splitlines():
         line = line.strip()
         if not line.startswith("data:"):
@@ -782,20 +784,28 @@ def build_openai_text(raw_sse):
                 cur_type = frags[-1].get("type", cur_type)
             for f in frags:
                 if isinstance(f, dict) and f.get("type") == "RESPONSE" and f.get("content"):
-                    parts.append(f["content"])
+                    c = f["content"]
+                    # Dedup: skip if this is a prefix of what we already have
+                    if c and not last_appended.endswith(c):
+                        parts.append(c)
+                        last_appended = c
             continue
 
         # Fragment-targeted ops: p contains fragments/-1/...
         p = obj.get("p", "")
         if isinstance(p, str) and "fragments/-1" in p:
             if isinstance(v, str) and cur_type == "RESPONSE":
-                parts.append(v)
+                if v and not last_appended.endswith(v):
+                    parts.append(v)
+                    last_appended = v
             continue
 
         # Bare delta appends belong to the current fragment
         if isinstance(v, str) and "p" not in obj:
             if cur_type == "RESPONSE":
-                parts.append(v)
+                if v and not last_appended.endswith(v):
+                    parts.append(v)
+                    last_appended = v
 
     return "".join(parts)
 
