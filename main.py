@@ -126,6 +126,18 @@ class ToolExecutor:
                 k: (_to_rel_path(v) if isinstance(v, str) and re.search(r'(path|file|dir)', k, re.I) else v)
                 for k, v in arguments.items()
             }
+            # Map common client tool names to internal names
+            TOOL_MAP = {
+                "write": "create_file",
+                "bash": "execute_command",
+                "read": "read_file",
+                "edit": "edit_file",
+                "glob": "list_files",
+                "grep": "search_files",
+                "ls": "list_files",
+            }
+            tool_name = TOOL_MAP.get(tool_name, tool_name)
+
             if tool_name == "execute_command":
                 return self.execute_command(arguments)
             elif tool_name == "create_file":
@@ -304,7 +316,7 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
-    return f"""REPLY WITH ONLY A JSON TOOL CALL. NO TEXT BEFORE OR AFTER.
+    return f"""REPLY WITH ONLY A JSON TOOL CALL. DO THE FIRST ACTION ONLY. NO TEXT.
 
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
@@ -1154,6 +1166,31 @@ async def chat_completions(request: Request):
 
                     tool_calls = relativize_tool_paths(parse_tool_calls(full_text))
 
+                    # AUTO-EXECUTE: loop until no more tool calls
+                    MAX_AUTO_ROUNDS = 5
+                    for _auto in range(MAX_AUTO_ROUNDS):
+                        if not tool_calls:
+                            break
+                        results = []
+                        for tc in tool_calls:
+                            name = tc.get("name", "")
+                            args = tc.get("arguments", {})
+                            result = tool_executor.execute(name, args)
+                            results.append(f"Tool: {name}\nArgs: {json.dumps(args)}\nResult:\n{result}")
+                        follow_up = "Tool results:\n\n" + "\n\n".join(results) + "\n\nContinue. If done, give your final answer."
+                        try:
+                            nudged = []
+                            async for p in driver.send_and_stream(follow_up):
+                                nudged.append(p)
+                            full_text = "".join(nudged)
+                            if full_text:
+                                full_text = clean_dom_artifacts(full_text)
+                                tool_calls = relativize_tool_paths(parse_tool_calls(full_text))
+                            else:
+                                break
+                        except Exception:
+                            break
+
                     if tool_calls and tools:
                         tc_list = [{
                             "id": "call_" + uuid.uuid4().hex[:12],
@@ -1211,124 +1248,37 @@ async def chat_completions(request: Request):
                 status_code=500,
             )
 
-    text = clean_dom_artifacts(raw)  # send_and_capture returns clean text via send_and_stream
+    text = clean_dom_artifacts(raw)
     LAST_RAW["body"] = raw
-
-    # Anti-hallucination: model narrated an action without using <_call> -> force format retry
-    if tools and not parse_tool_calls(text):
-        narrated = re.search(
-            r"\b(I (created|wrote|read|ran|executed|deleted|edited|updated)|I'?ll (create|write|read|run|execute|update)|Now I'?ll|successfully created)\b",
-            text, re.I,
-        )
-        if narrated:
-            nudge = (
-                "You described actions in plain text but did NOT output the tool json block. NOTHING was actually executed.\n"
-                'Reply now with your next action as exactly:\n```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```'
-            )
-            async with request_lock:
-                try:
-                    t2 = await driver.send_and_capture(nudge, has_tools=True)
-                    if t2 and parse_tool_calls(t2):
-                        text = t2
-                except Exception:
-                    pass
 
     created = int(time.time())
     cid = "chatcmpl-" + uuid.uuid4().hex[:12]
 
-    # Check for tool calls
-    tool_calls = relativize_tool_paths(parse_tool_calls(text))
-    if tools and not tool_calls:
-        salvaged = salvage_json_text(text)
-        if salvaged != text:
-            tool_calls = relativize_tool_paths(parse_tool_calls(salvaged))
-            if tool_calls:
-                text = salvaged
+    # AUTO-EXECUTE: loop until no more tool calls or max iterations
+    MAX_AUTO_ROUNDS = 5
+    for _round in range(MAX_AUTO_ROUNDS):
+        tool_calls = relativize_tool_paths(parse_tool_calls(text))
+        if not tool_calls:
+            break
 
-    if tool_calls and tools:
-        # Client sent tools -> hand calls back to the client (AI agent executes them)
-        cleaned = clean_dom_artifacts(remove_tool_calls(text))
-        tc_list = []
-        for i, c in enumerate(tool_calls):
-            tc_list.append({
-                "id": "call_" + uuid.uuid4().hex[:12],
-                "type": "function",
-                "function": {
-                    "name": c.get("name", ""),
-                    "arguments": json.dumps(c.get("arguments", {})),
-                },
-                "index": i,
-            })
+        # Execute tool calls locally
+        results = []
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("arguments", {})
+            result = tool_executor.execute(name, args)
+            results.append(f"Tool: {name}\nArgs: {json.dumps(args)}\nResult:\n{result}")
 
-        if not stream:
-            return {
-                "id": cid,
-                "object": "chat.completion",
-                "created": created,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": cleaned or None,
-                            "tool_calls": tc_list,
-                        },
-                        "finish_reason": "tool_calls",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                },
-            }
-
-        async def tool_event_stream():
-            yield "data: " + json.dumps({
-                "id": cid,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [{"index": 0, "delta": {"role": "assistant", "content": cleaned or None}, "finish_reason": None}],
-            }) + "\n\n"
-            yield "data: " + json.dumps({
-                "id": cid,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [{"index": 0, "delta": {"tool_calls": tc_list}, "finish_reason": None}],
-            }) + "\n\n"
-            yield "data: " + json.dumps({
-                "id": cid,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
-            }) + "\n\n"
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(tool_event_stream(), media_type="text/event-stream")
-
-    if tool_calls and not tools:
-        # Standalone mode (no client tools): execute locally, one round
-        results_text = "\n\n".join(
-            f"Tool: {c.get('name','')}\nArgs: {json.dumps(c.get('arguments', {}))}\nResult:\n{tool_executor.execute(c.get('name',''), c.get('arguments', {}))}"
-            for c in tool_calls
-        )
-        follow_up = (
-            "You previously made these tool calls and they were executed:\n\n" + results_text +
-            "\n\nContinue based on these results. Make another <_call> if needed, or give your final answer without any <_call> tags."
-        )
+        # Send results back to DeepSeek
+        follow_up = "Tool results:\n\n" + "\n\n".join(results) + "\n\nContinue. If done, give your final answer."
         async with request_lock:
             try:
-                t2 = await driver.send_and_capture(follow_up, has_tools=True)
-                if t2:
-                    text = remove_tool_calls(t2) or t2
+                raw = await driver.send_and_capture(follow_up, has_tools=True)
+                text = clean_dom_artifacts(raw)
             except Exception:
-                text = remove_tool_calls(text) or "Tools executed."
+                break
 
-    # Regular response (no tools)
+    # Regular response (no tools or after auto-execution)
     if not stream:
         return {
             "id": cid,
