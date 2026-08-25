@@ -883,6 +883,10 @@ last_task_head = ""
 # Stateless mode: fresh web chat per request. Default ON: agent clients (OpenCode etc.)
 # resend full history each call, and chat reuse leaks old responses into captures.
 STATELESS = os.getenv("DEEPSEEK_STATELESS", "1") == "1"
+# AUTOEXEC=1: bridge executes tools itself and returns only the final answer
+# (invisible to the client). Default 0: tool calls are returned to the client
+# (OpenCode etc. execute + display them natively).
+AUTOEXEC = os.getenv("DEEPSEEK_AUTOEXEC", "0") == "1"
 
 
 @asynccontextmanager
@@ -1267,7 +1271,7 @@ async def chat_completions(request: Request):
                                 "Your previous JSON block was incomplete/truncated. Repeat the FULL tool call JSON block now, nothing else."
                             ):
                                 nudged.append(p)
-                            t2 = driver.take_network_text("".join(nudged))
+                            t2 = driver.take_network_text("".join(nudged), has_tools=True)
                             tc2 = [c for c in relativize_tool_paths(parse_tool_calls(t2)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
                             if tc2:
                                 usable = tc2
@@ -1275,29 +1279,32 @@ async def chat_completions(request: Request):
                             pass
                     tool_calls = usable
 
-                    # AUTO-EXECUTE: loop until no more tool calls
-                    MAX_AUTO_ROUNDS = 5
-                    for _auto in range(MAX_AUTO_ROUNDS):
-                        if not tool_calls:
-                            break
-                        results = []
-                        for tc in tool_calls:
-                            name = tc.get("name", "")
-                            args = tc.get("arguments", {})
-                            result = tool_executor.execute(name, args)
-                            results.append(f"Tool: {name}\nArgs: {json.dumps(args)}\nResult:\n{result}")
-                        follow_up = "Tool results:\n\n" + "\n\n".join(results) + "\n\nContinue. If done, give your final answer."
-                        try:
-                            nudged = []
-                            async for p in driver.send_and_stream(follow_up):
-                                nudged.append(p)
-                            full_text = driver.take_network_text("".join(nudged))
-                            if full_text:
-                                tool_calls = relativize_tool_paths(parse_tool_calls(full_text))
-                            else:
+                    # Client-executes mode: hand tool calls back so the client
+                    # (OpenCode etc.) runs + displays them natively.
+                    if not (tools and not AUTOEXEC):
+                        # AUTO-EXECUTE: loop until no more tool calls
+                        MAX_AUTO_ROUNDS = 5
+                        for _auto in range(MAX_AUTO_ROUNDS):
+                            if not tool_calls:
                                 break
-                        except Exception:
-                            break
+                            results = []
+                            for tc in tool_calls:
+                                name = tc.get("name", "")
+                                args = tc.get("arguments", {})
+                                result = tool_executor.execute(name, args)
+                                results.append(f"Tool: {name}\nArgs: {json.dumps(args)}\nResult:\n{result}")
+                            follow_up = "Tool results:\n\n" + "\n\n".join(results) + "\n\nContinue. If done, give your final answer."
+                            try:
+                                nudged = []
+                                async for p in driver.send_and_stream(follow_up):
+                                    nudged.append(p)
+                                full_text = driver.take_network_text("".join(nudged))
+                                if full_text:
+                                    tool_calls = relativize_tool_paths(parse_tool_calls(full_text))
+                                else:
+                                    break
+                            except Exception:
+                                break
 
                     if tool_calls and tools:
                         tc_list = [{
@@ -1363,6 +1370,47 @@ async def chat_completions(request: Request):
 
     created = int(time.time())
     cid = "chatcmpl-" + uuid.uuid4().hex[:12]
+
+    # Client-executes mode: return tool calls for the client to run/display.
+    client_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
+    if tools and not AUTOEXEC and client_calls:
+        tc_list = [{
+            "id": "call_" + uuid.uuid4().hex[:12],
+            "type": "function",
+            "function": {
+                "name": c.get("name", ""),
+                "arguments": json.dumps(c.get("arguments", {})),
+            },
+            "index": i,
+        } for i, c in enumerate(client_calls)]
+        if not stream:
+            return {
+                "id": cid,
+                "object": "chat.completion",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": None, "tool_calls": tc_list},
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+        async def tool_event_stream():
+            yield "data: " + json.dumps({
+                "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}, "finish_reason": None}],
+            }) + "\n\n"
+            yield "data: " + json.dumps({
+                "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{"index": 0, "delta": {"tool_calls": tc_list}, "finish_reason": None}],
+            }) + "\n\n"
+            yield "data: " + json.dumps({
+                "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            }) + "\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(tool_event_stream(), media_type="text/event-stream")
 
     # AUTO-EXECUTE: loop until no more tool calls or max iterations
     MAX_AUTO_ROUNDS = 5
