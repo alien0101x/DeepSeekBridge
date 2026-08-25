@@ -321,12 +321,12 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
-    return f"""REPLY IN ENGLISH.
-If another action is needed NOW, reply with ONLY this JSON block:
+    return f"""REPLY IN ENGLISH. Work like a helpful engineer: think out loud, explain what you are doing and why.
+Before each action, briefly say in plain text WHAT you are doing and WHY (1-3 sentences), then output the JSON block:
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
 ```
-If the task is DONE or no more actions are needed, reply in PLAIN TEXT (no JSON block).
+After tool results, comment on what happened. If the task is DONE, reply in PLAIN TEXT with a clear summary of everything you did — no JSON block.
 TOOLS:
 {chr(10).join(lines)}"""
 
@@ -1125,13 +1125,14 @@ async def chat_completions(request: Request):
     # Truncate to stay under DeepSeek web timeout
     MAX_HISTORY = 12
     history_parts = []
+    system_text = ""
     for m in messages[-MAX_HISTORY:]:
         role = m.get("role", "")
         content = m.get("content", "")
         if isinstance(content, list):
             content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
         if role == "system":
-            continue
+            system_text += (content or "") + "\n"
         elif role == "user":
             history_parts.append(f"[User]: {content}")
         elif role == "assistant":
@@ -1146,7 +1147,11 @@ async def chat_completions(request: Request):
     # Create the full message with history
     full_message = ""
 
-    # Tool prompt FIRST so DeepSeek knows the format
+    # Client system prompt (defines the agent's persona/behavior) — keep it
+    if system_text.strip():
+        full_message += "YOUR INSTRUCTIONS:\n" + system_text.strip()[:6000] + "\n\n"
+
+    # Tool format rules
     if tool_prompt:
         full_message += tool_prompt + "\n\n"
 
@@ -1316,6 +1321,10 @@ async def chat_completions(request: Request):
                             },
                             "index": i,
                         } for i, c in enumerate(tool_calls)]
+                        # Narration that accompanied the action (model thinking out loud)
+                        prose = clean_dom_artifacts(remove_tool_calls(full_text)).strip()
+                        if prose and not parse_tool_calls(prose) and not prose.lstrip().startswith('{"'):
+                            yield sse({"content": prose})
                         yield sse({"tool_calls": tc_list})
                         yield sse({}, finish="tool_calls")
                     elif tools and classified_tool:
@@ -1374,6 +1383,9 @@ async def chat_completions(request: Request):
     # Client-executes mode: return tool calls for the client to run/display.
     client_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
     if tools and not AUTOEXEC and client_calls:
+        prose = clean_dom_artifacts(remove_tool_calls(text)).strip()
+        if parse_tool_calls(prose) or (prose.lstrip().startswith('{"')):
+            prose = ""
         tc_list = [{
             "id": "call_" + uuid.uuid4().hex[:12],
             "type": "function",
@@ -1391,12 +1403,17 @@ async def chat_completions(request: Request):
                 "model": model,
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": None, "tool_calls": tc_list},
+                    "message": {"role": "assistant", "content": prose or None, "tool_calls": tc_list},
                     "finish_reason": "tool_calls",
                 }],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             }
         async def tool_event_stream():
+            if prose:
+                yield "data: " + json.dumps({
+                    "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": {"content": prose}, "finish_reason": None}],
+                }) + "\n\n"
             yield "data: " + json.dumps({
                 "id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": None}, "finish_reason": None}],
