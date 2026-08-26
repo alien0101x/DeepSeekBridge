@@ -1268,7 +1268,7 @@ async def chat_completions(request: Request):
 
                     tool_calls = relativize_tool_paths(parse_tool_calls(full_text))
                     # Reject calls with empty args (DOM truncation artifacts)
-                    usable = [c for c in tool_calls if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
+                    usable = [c for c in tool_calls if c.get("name") and any(v != "" for v in c.get("arguments", {}).values())]
                     if tool_calls and not usable:
                         try:
                             nudged = []
@@ -1277,7 +1277,7 @@ async def chat_completions(request: Request):
                             ):
                                 nudged.append(p)
                             t2 = driver.take_network_text("".join(nudged), has_tools=True)
-                            tc2 = [c for c in relativize_tool_paths(parse_tool_calls(t2)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
+                            tc2 = [c for c in relativize_tool_paths(parse_tool_calls(t2)) if c.get("name") and any(v != "" for v in c.get("arguments", {}).values())]
                             if tc2:
                                 usable = tc2
                         except Exception:
@@ -1381,7 +1381,7 @@ async def chat_completions(request: Request):
     cid = "chatcmpl-" + uuid.uuid4().hex[:12]
 
     # Client-executes mode: return tool calls for the client to run/display.
-    client_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
+    client_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and any(v != "" for v in c.get("arguments", {}).values())]
     if tools and not AUTOEXEC and client_calls:
         prose = clean_dom_artifacts(remove_tool_calls(text)).strip()
         if parse_tool_calls(prose) or (prose.lstrip().startswith('{"')):
@@ -1432,7 +1432,7 @@ async def chat_completions(request: Request):
     # AUTO-EXECUTE: loop until no more tool calls or max iterations
     MAX_AUTO_ROUNDS = 5
     for _round in range(MAX_AUTO_ROUNDS):
-        tool_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and all(v != "" for v in c.get("arguments", {}).values())]
+        tool_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and any(v != "" for v in c.get("arguments", {}).values())]
         if not tool_calls:
             break
 
