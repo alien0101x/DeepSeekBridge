@@ -322,11 +322,11 @@ def build_tool_prompt(tools: list) -> str:
         lines.append(f"- {name}({args_sig})")
 
     return f"""REPLY IN ENGLISH. Work like a helpful engineer: think out loud, explain what you are doing and why.
-Before each action, briefly say in plain text WHAT you are doing and WHY (1-3 sentences), then output the JSON block:
+Before each action, explain in plain text WHAT you are doing and WHY (a sentence or two), then output the JSON block:
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
 ```
-After tool results, comment on what happened. If the task is DONE, reply in PLAIN TEXT with a clear summary of everything you did — no JSON block.
+After tool results, comment on the outcome. When the task is DONE, reply in PLAIN TEXT with a structured summary of everything you did and how you verified it — no JSON block.
 TOOLS:
 {chr(10).join(lines)}"""
 
@@ -1177,6 +1177,13 @@ async def chat_completions(request: Request):
     # Client system prompt (defines the agent's persona/behavior) — keep it
     if system_text.strip():
         full_message += "YOUR INSTRUCTIONS:\n" + system_text.strip()[:6000] + "\n\n"
+        # Override any conciseness rules from above — user wants visible reasoning
+        full_message += (
+            "COMMUNICATION STYLE (overrides earlier brevity rules): Explain your work like a "
+            "senior engineer mentoring a junior. Before acting, say what you plan to do and why. "
+            "After each tool result, comment on what happened. When finished, give a clear summary: "
+            "what you created/changed, file by file, and how you verified it.\n\n"
+        )
 
     # Tool format rules
     if tool_prompt:
