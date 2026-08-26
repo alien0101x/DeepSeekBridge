@@ -122,6 +122,11 @@ class ToolExecutor:
     def execute(self, tool_name: str, arguments: dict) -> str:
         """Execute a tool and return the result."""
         try:
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except Exception:
+                    arguments = {}
             arguments = {
                 k: (_to_rel_path(v) if isinstance(v, str) and re.search(r'(path|file|dir)', k, re.I) else v)
                 for k, v in arguments.items()
@@ -390,6 +395,11 @@ def _narrate_call(tc: dict) -> str:
     """Fallback narration when the model emits a bare tool call with no text."""
     name = tc.get("name", "tool")
     args = tc.get("arguments", {})
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {}
     if name == "bash":
         return f"I'll run: {str(args.get('command', ''))[:90]}"
     target = args.get("filePath") or args.get("path") or ""
