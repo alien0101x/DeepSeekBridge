@@ -1110,6 +1110,118 @@ def build_openai_text(raw_sse):
 
     return "".join(f["content"] for f in frags if f["type"] == "RESPONSE")
 
+# ---------- Chat history log (in-memory, viewable/editable via API) ----------
+chat_log: list[dict] = []  # [{role, content, timestamp, index}]
+
+def _log_chat(role: str, content: str):
+    chat_log.append({"role": role, "content": content, "ts": time.time(), "i": len(chat_log)})
+
+CHAT_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><title>Bridge Chat</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#0b1120;color:#e2e8f0;padding:1rem}
+h1{font-size:1.4rem;color:#94a3b8;margin-bottom:1rem;text-align:center}
+.msg{border-radius:1rem;padding:0.8rem 1rem;margin-bottom:0.6rem;max-width:85%;word-wrap:break-word;white-space:pre-wrap;position:relative;font-size:0.95rem;line-height:1.4}
+.user{background:#1e40af;margin-left:auto;border-bottom-right-radius:0.2rem}
+.assistant{background:#1e293b;border:1px solid #334155;border-bottom-left-radius:0.2rem}
+.tool{background:#0f172a;border:1px solid #475569;font-family:monospace;font-size:0.85rem;color:#94a3b8}
+.system{background:#1a1a2e;border:1px solid #555;font-style:italic;color:#94a3b8}
+.role{font-size:0.7rem;text-transform:uppercase;letter-spacing:1px;margin-bottom:0.3rem;opacity:0.6}
+.bar{display:flex;gap:0.5rem;justify-content:center;margin-bottom:1rem}
+.bar button{background:#334155;border:none;color:#e2e8f0;padding:0.4rem 0.8rem;border-radius:0.5rem;cursor:pointer;font-size:0.85rem}
+.bar button:hover{background:#475569}
+.bar button.del{background:#991b1b}.bar button.del:hover{background:#b91c1c}
+.bar button.edit{background:#1d4ed8}.bar button.edit:hover{background:#2563eb}
+textarea.edit-box{width:100%;min-height:60px;background:#0f172a;color:#e2e8f0;border:1px solid #3b82f6;border-radius:0.5rem;padding:0.5rem;font-family:inherit;resize:vertical}
+.count{text-align:center;color:#64748b;font-size:0.8rem;margin-bottom:0.5rem}
+</style></head><body>
+<h1>Bridge Chat Log</h1>
+<div class="count" id="count"></div>
+<div id="log"></div>
+<div class="bar">
+<button onclick="load()">Refresh</button>
+<button class="del" onclick="clearAll()">Clear All</button>
+</div>
+<script>
+async function load(){
+  const r=await fetch('/v1/chat/history');
+  const d=await r.json();
+  const el=document.getElementById('log');
+  el.innerHTML='';
+  document.getElementById('count').textContent=d.history.length+' messages';
+  d.history.forEach((m,i)=>{
+    const div=document.createElement('div');
+    div.className='msg '+(m.role==='user'?'user':m.role==='assistant'?'assistant':m.role==='tool'?'tool':'system');
+    div.innerHTML='<div class="role">'+m.role+' #'+i+'</div><div class="content">'+escHtml(m.content)+'</div>'
+      +'<div class="bar" style="justify-content:flex-end;margin-top:0.4rem">'
+      +'<button class="edit" onclick="editMsg('+i+')">Edit</button>'
+      +'<button class="del" onclick="delMsg('+i+')">Delete</button></div>';
+    el.appendChild(div);
+  });
+}
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+async function delMsg(i){await fetch('/v1/chat/history/'+i,{method:'DELETE'});load()}
+async function clearAll(){await fetch('/v1/chat/history',{method:'DELETE'});load()}
+async function editMsg(i){
+  const r=await fetch('/v1/chat/history');
+  const d=await r.json();
+  const old=d.history[i]?.content||'';
+  const box=document.createElement('div');
+  box.className='msg assistant';
+  box.innerHTML='<div class="role">Edit #'+i+'</div>'
+    +'<textarea class="edit-box" id="et'+i+'">'+escHtml(old)+'</textarea>'
+    +'<div class="bar" style="margin-top:0.4rem">'
+    +'<button class="edit" onclick="saveMsg('+i+')">Save</button>'
+    +'<button onclick="this.closest(\'.msg\').remove()">Cancel</button></div>';
+  document.getElementById('log').children[i].after(box);
+  document.getElementById('et'+i).focus();
+}
+async function saveMsg(i){
+  const txt=document.getElementById('et'+i).value;
+  await fetch('/v1/chat/history/'+i,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:txt})});
+  load();
+}
+load();
+</script></body></html>"""
+
+
+@app.get("/v1/chat/history")
+async def get_chat_history():
+    async with request_lock:
+        return {"history": chat_log, "count": len(chat_log)}
+
+
+@app.get("/v1/chat/history/html")
+async def chat_history_html():
+    return Response(content=CHAT_HTML, media_type="text/html")
+
+
+@app.put("/v1/chat/history/{index}")
+async def edit_chat_message(index: int, request: Request):
+    body = await request.json()
+    async with request_lock:
+        if 0 <= index < len(chat_log):
+            chat_log[index]["content"] = body.get("content", chat_log[index]["content"])
+            return {"ok": True, "index": index}
+    return {"ok": False, "error": "index out of range"}
+
+
+@app.delete("/v1/chat/history/{index}")
+async def delete_chat_message(index: int):
+    async with request_lock:
+        if 0 <= index < len(chat_log):
+            chat_log.pop(index)
+            return {"ok": True}
+    return {"ok": False, "error": "index out of range"}
+
+
+@app.delete("/v1/chat/history")
+async def clear_chat_history():
+    async with request_lock:
+        chat_log.clear()
+    return {"ok": True}
+
+
 @app.get("/v1/models")
 async def models():
     return {
@@ -1297,6 +1409,9 @@ async def chat_completions(request: Request):
             current_msg = history_parts[-1]
     full_message += "Current request:\n" + current_msg
 
+    # Log user request to chat history
+    _log_chat("user", current_msg.replace("[User]: ", "", 1))
+
     # Tool prompt AGAIN at the END as reminder
     if tool_prompt:
         full_message += "\n\n" + tool_prompt
@@ -1482,11 +1597,12 @@ async def chat_completions(request: Request):
                             if not tool_calls:
                                 break
                             results = []
-                            for tc in tool_calls:
-                                name = tc.get("name", "")
-                                args = tc.get("arguments", {})
-                                result = tool_executor.execute(name, args)
-                                results.append(f"Tool: {name}\nArgs: {json.dumps(args)}\nResult:\n{result}")
+                        for tc in tool_calls:
+                            name = tc.get("name", "")
+                            args = tc.get("arguments", {})
+                            result = tool_executor.execute(name, args)
+                            results.append(f"Tool: {name}\nArgs: {json.dumps(args)}\nResult:\n{result}")
+                            _log_chat("tool", f"{name}({json.dumps(args)}) => {result[:500]}")
                             follow_up = "Tool results:\n\n" + "\n\n".join(results) + "\n\nContinue. If done, give your final answer."
                             try:
                                 nudged = []
@@ -1516,6 +1632,8 @@ async def chat_completions(request: Request):
                             prose = ""  # leftover JSON junk, not real narration
                         if any(m in prose for m in ("REPLY IN ENGLISH", "COMMUNICATION STYLE", "YOUR INSTRUCTIONS:")):
                             prose = ""  # echoed instructions are not narration
+                        _log_chat("assistant", prose or _narrate_call(tool_calls[0]))
+                        _log_chat("assistant", f"[tool_call: {tool_calls[0].get('name')}({json.dumps(tool_calls[0].get('arguments',{}))})]")
                         yield sse({"content": prose or _narrate_call(tool_calls[0])})
                         yield sse({"tool_calls": tc_list})
                         yield sse({}, finish="tool_calls")
@@ -1524,10 +1642,13 @@ async def chat_completions(request: Request):
                         prose = re.split(r'\{\s*"name"', remove_tool_calls(full_text))[0].strip()
                         prose = _strip_json_fragment(prose, True)
                         if prose:
+                            _log_chat("assistant", prose)
                             yield sse({"content": prose})
                         yield sse({}, finish="stop")
                     else:
-                        yield sse({"content": _strip_json_fragment(full_text, bool(tools))})
+                        reply = _strip_json_fragment(full_text, bool(tools))
+                        _log_chat("assistant", reply)
+                        yield sse({"content": reply})
                         yield sse({}, finish="stop")
 
                     yield "data: [DONE]\n\n"
