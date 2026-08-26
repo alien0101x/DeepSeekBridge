@@ -812,7 +812,7 @@ class DeepSeekDriver:
                 if full_current == last_text:
                     stable_polls += 1
                     # Network body already captured -> no need to wait for DOM stability
-                    limit = 6 if getattr(self, "_cdp_bodies", None) else 40
+                    limit = 10 if getattr(self, "_cdp_bodies", None) else 40
                     if stable_polls >= limit:
                         break
                 elif len(full_current) > len(last_text) and full_current.startswith(last_text):
@@ -842,6 +842,15 @@ class DeepSeekDriver:
 
             # Wait briefly for response to complete
             await asyncio.sleep(0.5 if getattr(self, "_cdp_bodies", None) else 2.0)
+
+            # If no network body yet, the model may just be mid-generation
+            # (early-exit polling fired during a pause). Give it a moment —
+            # falling back to partial DOM text truncates long tool arguments.
+            if not self._cdp_bodies and has_tools:
+                for _ in range(16):
+                    await asyncio.sleep(0.5)
+                    if self._cdp_bodies:
+                        break
 
             # Try to get full SSE body via CDP Network.getResponseBody.
             # DeepSeek fires several chat/completion XHRs per send; pick the LARGEST body
@@ -1209,7 +1218,17 @@ async def chat_completions(request: Request):
             full_message += part + "\n\n"
 
     # Add current user message
-    current_msg = history_parts[-1] if history_parts else "[User]: Hello"
+    # Current request = last NON-assistant message. When the transcript ends
+    # with our own reply (post-tool rounds), asking the model to respond to
+    # itself makes it echo completion ("Done.") forever.
+    current_msg = "[User]: Hello"
+    for _p in reversed(history_parts):
+        if not _p.startswith("[Assistant]:"):
+            current_msg = _p
+            break
+    else:
+        if history_parts:
+            current_msg = history_parts[-1]
     full_message += "Current request:\n" + current_msg
 
     # Tool prompt AGAIN at the END as reminder
