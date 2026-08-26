@@ -1589,13 +1589,26 @@ async def chat_completions(request: Request):
                         if salvaged != full_text:
                             full_text = salvaged
 
-                    # Broken/ambiguous tool attempt -> one forced re-format round
+                    # No tool call detected -> force one retry
                     if tools and not parse_tool_calls(full_text):
-                        nudge = (
-                            "Your last reply had a malformed tool call and NOTHING was executed.\n"
-                            "Reply again with your next action as exactly:\n"
-                            '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```'
-                        )
+                        # Check if model just narrated without acting
+                        has_action_words = bool(re.search(
+                            r"(?:I'll|I will|let me|going to|now I'll|I need to|I should).*(?:read|create|write|edit|update|add|run|check|fix)",
+                            full_text, re.I
+                        ))
+                        if has_action_words:
+                            nudge = (
+                                "You narrated what you would do but DID NOT include the JSON tool call block.\n"
+                                "Your narration said you would act — now ACT. Include the JSON block:\n"
+                                '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```\n'
+                                "Do NOT just narrate again. Execute the tool call NOW."
+                            )
+                        else:
+                            nudge = (
+                                "Your last reply had no tool call and NOTHING was executed.\n"
+                                "Reply with your next action as exactly:\n"
+                                '```json\n{"name": "tool_name", "arguments": {"param": "value"}}\n```'
+                            )
                         try:
                             nudged = []
                             async for p in driver.send_and_stream(nudge):
