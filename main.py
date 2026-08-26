@@ -483,7 +483,6 @@ def parse_tool_calls(text: str) -> list:
     for match in candidates:
         try:
             cleaned = match.replace("```json", "").replace("```", "").strip()
-            cleaned = cleaned.replace('\\"', '"')
             call = json.loads(cleaned)
             if isinstance(call.get("arguments"), str):
                 call["arguments"] = json.loads(call["arguments"])
@@ -1657,9 +1656,14 @@ async def chat_completions(request: Request):
                     if tool_calls and tools:
                         # OpenCode expects camelCase (filePath, command) — do NOT alias
                         # The model already emits camelCase, just pass through as-is
-                        # OpenCode expects arguments as a dict, not a JSON string
+                        # OpenCode expects arguments as a JSON string per OpenAI API spec
                         for tc in tool_calls:
-                            print(f"[bridge] sending to client: name={tc.get('name')} args_keys={list(tc.get('arguments',{}).keys())}", flush=True)
+                            args = tc.get("arguments", {})
+                            # Ensure arguments is already a string (from parse_tool_calls)
+                            if isinstance(args, dict):
+                                args = json.dumps(args)
+                            tc["arguments"] = args
+                            print(f"[bridge] sending to client: name={tc.get('name')} args_type={type(args).__name__} args_len={len(str(args))}", flush=True)
                         tc_list = [{
                             "id": "call_" + uuid.uuid4().hex[:12],
                             "type": "function",
