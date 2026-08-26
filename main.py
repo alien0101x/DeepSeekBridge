@@ -352,12 +352,21 @@ def build_tool_prompt(tools: list) -> str:
         ex_args[k] = 1 if ptype in ("number", "integer") else (True if ptype == "boolean" else "...")
     example = json.dumps({"name": ex_name, "arguments": ex_args})
 
-    return f"""REPLY IN ENGLISH. EVERY reply MUST follow this format:
-FIRST LINE: 2-3 sentences explaining WHAT you will do and WHY, including specific details like filenames, function names, and what features/improvements you're adding.
-THEN (REQUIRED): The JSON tool call block. You MUST include this if you are taking any action. Shape (from the real tool "{ex_name}"):
+    return f"""YOU ARE AN AI AGENT WITH TOOL ACCESS. You MUST use tools to complete tasks.
+
+FORMAT (MANDATORY for every action):
+STEP 1 - NARRATE: Write 2-3 sentences explaining what you will do, which files you'll modify, and what features you're adding.
+STEP 2 - ACT: Include the JSON tool call block BELOW your narration. This is REQUIRED, not optional.
+
+Example shape (use the real tool "{ex_name}"):
 {example}
-Choose whichever tool fits; never invent tool names. Never respond with narration only — always include the JSON block when you are about to act.
-After tool results, comment on the outcome in plain text. When DONE, give a structured summary of everything you did — no JSON block.
+
+CRITICAL RULES:
+- NEVER respond with ONLY text narration. Every response that takes action MUST include the JSON block.
+- If you say "I'll read..." or "I'll create..." or "I'll update...", you MUST immediately follow with the JSON tool call.
+- Narration without a tool call is FORBIDDEN when you are about to act.
+
+After tool results, comment on what happened. When DONE, give a summary — no JSON block then.
 TOOLS:
 {chr(10).join(lines)}"""
 
