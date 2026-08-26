@@ -321,12 +321,52 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
+def build_tool_prompt(tools: list) -> str:
+    """Convert OpenAI tool definitions to compact natural language for DeepSeek."""
+    if not tools:
+        return ""
+
+    lines = []
+    for tool in tools[:15]:
+        func = tool.get("function", {})
+        name = func.get("name", "")
+        if not name:
+            continue
+        props = func.get("parameters", {}).get("properties", {})
+        required = func.get("parameters", {}).get("required", [])
+        args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
+        lines.append(f"- {name}({args_sig})")
+
+    # Dynamic example built from a REAL tool so the model can't parrot placeholders.
+    # Prefer a simple tool; use required args only, with type-correct placeholders
+    # (a copied wrong-typed value like "timeout": "..." fails client schemas).
+    def _pick_example_tool():
+        best = None
+        for t in tools[:5]:
+            f = t.get("function", {}) or {}
+            params = f.get("parameters", {}) or {}
+            props = params.get("properties", {}) or {}
+            req = params.get("required", []) or []
+            if req and all((props.get(k, {}).get("type", "string") == "string") for k in req):
+                return f, props, req
+            if best is None and f.get("name"):
+                best = (f, props, req)
+        return best if best else (tools[0].get("function", {}) or {}, {}, [])
+
+    ex_func, ex_props, ex_req = _pick_example_tool()
+    ex_name = ex_func.get("name", "")
+    keys = [k for k in ex_req if k in ex_props] or list(ex_props.keys())[:1]
+    ex_args = {}
+    for k in keys:
+        ptype = ex_props.get(k, {}).get("type", "string")
+        ex_args[k] = 1 if ptype in ("number", "integer") else (True if ptype == "boolean" else "...")
+    example = json.dumps({"name": ex_name, "arguments": ex_args})
+
     return f"""REPLY IN ENGLISH. EVERY reply MUST follow this format:
 FIRST LINE: one plain-text sentence saying WHAT you are about to do and WHY.
-THEN: if acting, the JSON block. NEVER output a bare JSON block without that first sentence. NEVER act silently.
-```json
-{{"name": "tool_name", "arguments": {{"param": "value"}}}}
-```
+THEN: if acting, the JSON block. NEVER act silently. Shape (from the real tool "{ex_name}"):
+{example}
+Choose whichever tool fits; never invent tool names.
 After tool results, comment on the outcome in plain text. When DONE, give a structured summary of everything you did — no JSON block.
 TOOLS:
 {chr(10).join(lines)}"""
@@ -1302,6 +1342,25 @@ async def chat_completions(request: Request):
 
                     full_text = clean_dom_artifacts(full_text)
 
+                    # If the model echoed our instruction block instead of acting,
+                    # force one retry focused on the actual request.
+                    _ECHO_MARKS = ("YOUR INSTRUCTIONS:", "REPLY IN ENGLISH", "COMMUNICATION STYLE")
+                    if tools and any(m in full_text[:600] for m in _ECHO_MARKS) and not relativize_tool_paths(parse_tool_calls(full_text)):
+                        print("[bridge] instruction echo detected, retrying", flush=True)
+                        try:
+                            nudged = []
+                            async for p in driver.send_and_stream(
+                                "You repeated the instructions instead of acting. "
+                                "Respond ONLY to the CURRENT REQUEST below, in the required format.\n\n"
+                                + full_message[-1500:]
+                            ):
+                                nudged.append(p)
+                            t2 = driver.take_network_text("".join(nudged), has_tools=True)
+                            if t2 and not any(m in t2[:400] for m in _ECHO_MARKS):
+                                full_text = t2
+                        except Exception:
+                            pass
+
                     # Tool call classification (post-streaming)
                     classified_tool = bool(
                         re.search(r'```(?:json)?\s*\{', full_text)
@@ -1351,6 +1410,31 @@ async def chat_completions(request: Request):
                             pass
                     tool_calls = usable
 
+                    # Reject hallucinated tool names (e.g. literal "tool_name"
+                    # copied from the example) and force one re-pick round.
+                    if tools and tool_calls:
+                        valid_names = {t.get("function", {}).get("name", "") for t in tools}
+                        bad_names = {c.get("name", "") for c in tool_calls} - valid_names
+                        if bad_names:
+                            print(f"[bridge] invalid tool names: {bad_names}", flush=True)
+                            try:
+                                nudged = []
+                                async for p in driver.send_and_stream(
+                                    f"These tools DO NOT exist: {sorted(bad_names)}. "
+                                    f"Choose ONE real tool from: {sorted(valid_names)}. "
+                                    "Reply with the first-line sentence plus its JSON block only."
+                                ):
+                                    nudged.append(p)
+                                t2 = driver.take_network_text("".join(nudged), has_tools=True)
+                                tc2 = [c for c in relativize_tool_paths(parse_tool_calls(t2))
+                                       if c.get("name") in valid_names and any(v != "" for v in c.get("arguments", {}).values())]
+                                if tc2:
+                                    tool_calls = tc2
+                                    full_text = t2
+                            except Exception:
+                                pass
+                            tool_calls = [c for c in tool_calls if c.get("name") in valid_names]
+
                     # Client-executes mode: hand tool calls back so the client
                     # (OpenCode etc.) runs + displays them natively.
                     if not (tools and not AUTOEXEC):
@@ -1392,6 +1476,8 @@ async def chat_completions(request: Request):
                         prose = clean_dom_artifacts(remove_tool_calls(full_text)).strip()
                         if prose and (parse_tool_calls(prose) or prose.lstrip().startswith('{"')):
                             prose = ""  # leftover JSON junk, not real narration
+                        if any(m in prose for m in ("REPLY IN ENGLISH", "COMMUNICATION STYLE", "YOUR INSTRUCTIONS:")):
+                            prose = ""  # echoed instructions are not narration
                         yield sse({"content": prose or _narrate_call(tool_calls[0])})
                         yield sse({"tool_calls": tc_list})
                         yield sse({}, finish="tool_calls")
