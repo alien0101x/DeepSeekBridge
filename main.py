@@ -354,9 +354,9 @@ def build_tool_prompt(tools: list) -> str:
 
     return f"""REPLY IN ENGLISH. EVERY reply MUST follow this format:
 FIRST LINE: 2-3 sentences explaining WHAT you will do and WHY, including specific details like filenames, function names, and what features/improvements you're adding.
-THEN: if acting, the JSON block. NEVER act silently. Shape (from the real tool "{ex_name}"):
+THEN (REQUIRED): The JSON tool call block. You MUST include this if you are taking any action. Shape (from the real tool "{ex_name}"):
 {example}
-Choose whichever tool fits; never invent tool names.
+Choose whichever tool fits; never invent tool names. Never respond with narration only — always include the JSON block when you are about to act.
 After tool results, comment on the outcome in plain text. When DONE, give a structured summary of everything you did — no JSON block.
 TOOLS:
 {chr(10).join(lines)}"""
