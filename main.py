@@ -353,7 +353,7 @@ def build_tool_prompt(tools: list) -> str:
     example = json.dumps({"name": ex_name, "arguments": ex_args})
 
     return f"""REPLY IN ENGLISH. EVERY reply MUST follow this format:
-FIRST LINE: one plain-text sentence saying WHAT you are about to do and WHY.
+FIRST LINE: 2-3 sentences explaining WHAT you will do and WHY, including specific details like filenames, function names, and what features/improvements you're adding.
 THEN: if acting, the JSON block. NEVER act silently. Shape (from the real tool "{ex_name}"):
 {example}
 Choose whichever tool fits; never invent tool names.
@@ -386,12 +386,16 @@ def _narrate_call(tc: dict) -> str:
         except Exception:
             args = {}
     if name == "bash":
-        return f"I'll run: {str(args.get('command', ''))[:90]}"
+        cmd = str(args.get("command", ''))[:90]
+        return f"I'll run this command: `{cmd}` to execute the operation and check the results."
     target = args.get("filePath") or args.get("path") or ""
     if target:
         verb = {"write": "create", "create_file": "create"}.get(name, "update")
-        return f"I'll {verb} **{target}**."
-    return f"I'll use the {name} tool now."
+        content_preview = str(args.get("content", ""))[:80].replace('\n', ' ')
+        return f"I'll {verb} **{target}** with the following content: {content_preview}..."
+    if name == "edit":
+        return f"I'll edit **{target or 'the file'}** by replacing the old string with the new one."
+    return f"I'll use the {name} tool now to complete the requested operation."
 
 
 def _strip_json_fragment(text: str, has_tools: bool) -> str:
@@ -1431,13 +1435,15 @@ async def chat_completions(request: Request):
     # Client system prompt (defines the agent's persona/behavior) — keep it
     if system_text.strip():
         full_message += "YOUR INSTRUCTIONS:\n" + system_text.strip()[:6000] + "\n\n"
-        # Override any conciseness rules from above — user wants visible reasoning
-        full_message += (
-            "COMMUNICATION STYLE (overrides earlier brevity rules): Explain your work like a "
-            "senior engineer mentoring a junior. Before acting, say what you plan to do and why. "
-            "After each tool result, comment on what happened. When finished, give a clear summary: "
-            "what you created/changed, file by file, and how you verified it.\n\n"
-        )
+
+    # Override any conciseness rules — user wants visible reasoning
+    full_message += (
+        "COMMUNICATION STYLE (overrides earlier brevity rules): Explain your work like a "
+        "senior engineer mentoring a junior. Before acting, say what you plan to do and why, "
+        "including specific details: filenames, function names, what features/improvements you're adding. "
+        "After each tool result, comment on what happened. When finished, give a clear summary: "
+        "what you created/changed, file by file, and how you verified it.\n\n"
+    )
 
     # Tool format rules
     if tool_prompt:
