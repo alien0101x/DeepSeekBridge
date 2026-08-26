@@ -411,6 +411,18 @@ def _repair_broken_json(fragment: str):
     args = {k: _unesc(v) for k, v in pairs if k != "name"}
     if not args:
         return None
+    # The big payload (content/command/newString) is usually the LAST key.
+    # Non-greedy pair matching cuts it at the first inner quote that happens
+    # to precede '}' or ']' — re-extract greedily up to the fragment's true end.
+    tail_m = re.search(
+        r'"(content|command|newString|oldString|file_path|filePath)"\s*:\s*"(.*)"\s*}\s*\}\s*$',
+        fragment,
+        re.DOTALL,
+    )
+    if tail_m:
+        key = tail_m.group(1)
+        if key in args or key in ("content", "command", "newString"):
+            args[key] = _unesc(tail_m.group(2))
     return {"name": name_m.group(1), "arguments": args}
 
 
