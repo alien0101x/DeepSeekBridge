@@ -1778,6 +1778,11 @@ async def chat_completions(request: Request):
             prose = ""
         if not prose:
             prose = _narrate_call(client_calls[0])
+        # OpenCode expects arguments as a JSON string per OpenAI API spec
+        for c in client_calls:
+            args = c.get("arguments", {})
+            if isinstance(args, dict):
+                c["arguments"] = json.dumps(args)
         tc_list = [{
             "id": "call_" + uuid.uuid4().hex[:12],
             "type": "function",
