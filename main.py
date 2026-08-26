@@ -603,8 +603,10 @@ class DeepSeekDriver:
                         body = result.get("body", "")
                         if body:
                             self._cdp_bodies[req_id] = body
-                    except Exception:
-                        pass
+                        else:
+                            print(f"[cdp] grab empty body for rid={req_id}", flush=True)
+                    except Exception as e:
+                        print(f"[cdp] grab error rid={req_id}: {e}", flush=True)
 
                 loop.create_task(grab())
 
@@ -869,7 +871,12 @@ class DeepSeekDriver:
                 if not has_tools and (
                     "\nCopy\n" in current
                 ):
-                    break
+                    # Only break if the response footer is visible (response truly done)
+                    if "AI-generated" in current or "for reference only" in current:
+                        break
+                    # Also check for the stop indicator (thumbs up/down buttons)
+                    if "\nCopy\n" in current and current.count("\n") > 15:
+                        break
 
                 # For tool calls, wait for stable text
                 if has_tools and len(sent) >= 3000:
@@ -878,7 +885,9 @@ class DeepSeekDriver:
                 if full_current == last_text:
                     stable_polls += 1
                     # Network body already captured -> no need to wait for DOM stability
-                    limit = 10 if getattr(self, "_cdp_bodies", None) else 40
+                    # Code block may still be rendering -> need more patience
+                    has_code = has_tools and code_text and len(code_text) > 50
+                    limit = 10 if getattr(self, "_cdp_bodies", None) else (20 if has_code else 40)
                     if stable_polls >= limit:
                         break
                 elif len(full_current) > len(last_text) and full_current.startswith(last_text):
@@ -945,6 +954,23 @@ class DeepSeekDriver:
                     final_net = build_openai_text(best_body)
             else:
                 print(f"[cdp] no candidates (cdp={bool(self.cdp)}, ids={len(req_ids)})", flush=True)
+
+            # Fallback: if CDP body empty but code block on page has content, use it
+            if not final_net and has_tools:
+                try:
+                    code_fallback = await self.page.evaluate("""() => {
+                        const blocks = document.querySelectorAll('pre code, code, [class*="code-block"]');
+                        if (blocks.length) {
+                            const last = blocks[blocks.length - 1];
+                            return last.textContent || last.innerText || '';
+                        }
+                        return '';
+                    }""")
+                    if code_fallback and len(code_fallback) > 50:
+                        print(f"[capture] CDP empty, using DOM code block ({len(code_fallback)} chars)", flush=True)
+                        final_net = code_fallback
+                except Exception:
+                    pass
 
             # If network capture produced more than DOM streaming sent, yield the tail
             self.last_network_text = final_net
