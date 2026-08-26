@@ -372,6 +372,20 @@ TOOLS:
 {chr(10).join(lines)}"""
 
 
+def _is_filler_only(tool_calls: list) -> bool:
+    """True when every call is a pointless 'sign-off' command (echo Done / exit 0).
+    These otherwise loop forever: model echoes completion, client executes,
+    model announces completion again."""
+    if not tool_calls:
+        return False
+    for c in tool_calls:
+        cmd = str((c.get("arguments") or {}).get("command", ""))
+        base = cmd.split('|')[0].split('&')[0].strip().lower()
+        if c.get("name") != "bash" or not (base.startswith("echo") or base.startswith("exit")):
+            return False
+    return True
+
+
 def _narrate_call(tc: dict) -> str:
     """Fallback narration when the model emits a bare tool call with no text."""
     name = tc.get("name", "tool")
@@ -1354,6 +1368,13 @@ async def chat_completions(request: Request):
 
                     full_text = clean_dom_artifacts(full_text)
 
+                    # DeepSeek web rate limit -> fail fast, do NOT retry (retrying
+                    # hammers the limit and poisons every later round)
+                    if re.search(r"messages?\s+too\s+frequent|too\s+many\s+requests|rate\s*-?\s*limit", full_text, re.I):
+                        yield sse({"content": "[DeepSeek web rate limit reached. Wait 10-30 minutes, then resend.]"}, finish="stop")
+                        yield "data: [DONE]\n\n"
+                        return
+
                     # If the model echoed our instruction block instead of acting,
                     # force one retry focused on the actual request.
                     _ECHO_MARKS = ("YOUR INSTRUCTIONS:", "REPLY IN ENGLISH", "COMMUNICATION STYLE")
@@ -1446,6 +1467,11 @@ async def chat_completions(request: Request):
                             except Exception:
                                 pass
                             tool_calls = [c for c in tool_calls if c.get("name") in valid_names]
+
+                    # Sign-off filler (echo Done / exit 0) = final answer, not actions
+                    if tool_calls and _is_filler_only(tool_calls):
+                        print("[bridge] filler sign-off detected -> final text", flush=True)
+                        tool_calls = []
 
                     # Client-executes mode: hand tool calls back so the client
                     # (OpenCode etc.) runs + displays them natively.
@@ -1548,6 +1574,9 @@ async def chat_completions(request: Request):
 
     # Client-executes mode: return tool calls for the client to run/display.
     client_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and any(v != "" for v in c.get("arguments", {}).values())]
+    if tools and not AUTOEXEC and client_calls:
+        if _is_filler_only(client_calls):
+            client_calls = []
     if tools and not AUTOEXEC and client_calls:
         prose = clean_dom_artifacts(remove_tool_calls(text)).strip()
         if parse_tool_calls(prose) or (prose.lstrip().startswith('{"')):
