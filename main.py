@@ -493,11 +493,15 @@ class DeepSeekDriver:
     async def boot(self):
         self.page = self.ctx.pages[0] if self.ctx.pages else await self.ctx.new_page()
 
-        # Use CDP to track HTTP responses for SSE body capture
+        # Use CDP to track HTTP responses for SSE body capture.
+        # Bodies are fetched IMMEDIATELY on loadingFinished — page navigations
+        # (stateless new_chat) evict cached bodies otherwise.
         self._cdp_response_ids = {}
+        self._cdp_bodies = {}
         try:
             self.cdp = await self.page.context.new_cdp_session(self.page)
             await self.cdp.send("Network.enable")
+            loop = asyncio.get_event_loop()
 
             def on_response_received(params):
                 resp = params.get("response", {})
@@ -506,7 +510,26 @@ class DeepSeekDriver:
                 if "chat/completion" in url:
                     self._cdp_response_ids.setdefault("chat_completion", []).append(req_id)
 
+            def on_loading_finished(params):
+                req_id = params.get("requestId", "")
+                if req_id not in self._cdp_response_ids.get("chat_completion", []):
+                    return
+                if req_id in self._cdp_bodies:
+                    return
+
+                async def grab():
+                    try:
+                        result = await self.cdp.send("Network.getResponseBody", {"requestId": req_id})
+                        body = result.get("body", "")
+                        if body:
+                            self._cdp_bodies[req_id] = body
+                    except Exception:
+                        pass
+
+                loop.create_task(grab())
+
             self.cdp.on("Network.responseReceived", on_response_received)
+            self.cdp.on("Network.loadingFinished", on_loading_finished)
         except Exception:
             self.cdp = None
 
@@ -774,7 +797,9 @@ class DeepSeekDriver:
 
                 if full_current == last_text:
                     stable_polls += 1
-                    if stable_polls >= 40:
+                    # Network body already captured -> no need to wait for DOM stability
+                    limit = 6 if getattr(self, "_cdp_bodies", None) else 40
+                    if stable_polls >= limit:
                         break
                 elif len(full_current) > len(last_text) and full_current.startswith(last_text):
                     chunk = full_current[len(last_text):]
@@ -802,7 +827,7 @@ class DeepSeekDriver:
                         break
 
             # Wait briefly for response to complete
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(0.5 if getattr(self, "_cdp_bodies", None) else 2.0)
 
             # Try to get full SSE body via CDP Network.getResponseBody.
             # DeepSeek fires several chat/completion XHRs per send; pick the LARGEST body
@@ -812,15 +837,17 @@ class DeepSeekDriver:
             if self.cdp and req_ids:
                 best_body = ""
                 for rid in req_ids:
-                    try:
-                        result = await self.cdp.send("Network.getResponseBody", {"requestId": rid})
-                        body = result.get("body", "")
-                        print(f"[cdp] rid={rid} body_len={len(body)} head={body[:60]!r}", flush=True)
-                        if body and len(body) > len(best_body):
-                            best_body = body
-                    except Exception as e:
-                        print(f"[cdp] rid={rid} error: {e}", flush=True)
-                        continue
+                    body = self._cdp_bodies.pop(rid, "")
+                    if not body:  # cache miss -> last-chance direct fetch
+                        try:
+                            result = await self.cdp.send("Network.getResponseBody", {"requestId": rid})
+                            body = result.get("body", "")
+                        except Exception:
+                            body = ""
+                    print(f"[cdp] rid={rid} body_len={len(body)}", flush=True)
+                    if body and len(body) > len(best_body):
+                        best_body = body
+                self._cdp_bodies.clear()
                 if best_body:
                     try:
                         (Path(__file__).parent / "last_sse.txt").write_text(best_body, encoding="utf-8")
