@@ -1614,6 +1614,18 @@ async def chat_completions(request: Request):
                         print("[bridge] filler sign-off detected -> final text", flush=True)
                         tool_calls = []
 
+                    # Repeat-loop guard: if same tool+args appeared 3+ times, stop
+                    if tool_calls:
+                        sig = json.dumps(tool_calls[0], sort_keys=True)[:200]
+                        if not hasattr(driver, "_recent_sigs"):
+                            driver._recent_sigs = []
+                        driver._recent_sigs.append(sig)
+                        if len(driver._recent_sigs) > 8:
+                            driver._recent_sigs = driver._recent_sigs[-8:]
+                        if driver._recent_sigs.count(sig) >= 3:
+                            print(f"[bridge] repeat-loop detected ({sig[:80]}...) -> stopping", flush=True)
+                            tool_calls = []
+
                     # Client-executes mode: hand tool calls back so the client
                     # (OpenCode etc.) runs + displays them natively.
                     if not (tools and not AUTOEXEC):
@@ -1643,6 +1655,11 @@ async def chat_completions(request: Request):
                                 break
 
                     if tool_calls and tools:
+                        # Alias arguments for client (OpenCode expects snake_case)
+                        ARG_ALIASES_CLIENT = {"filePath": "file_path", "filepath": "file_path", "path": "file_path",
+                                               "cmd": "command", "query": "pattern"}
+                        for tc in tool_calls:
+                            tc["arguments"] = {ARG_ALIASES_CLIENT.get(k, k): v for k, v in tc.get("arguments", {}).items()}
                         tc_list = [{
                             "id": "call_" + uuid.uuid4().hex[:12],
                             "type": "function",
