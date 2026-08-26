@@ -321,14 +321,28 @@ def build_tool_prompt(tools: list) -> str:
         args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
         lines.append(f"- {name}({args_sig})")
 
-    return f"""REPLY IN ENGLISH. Work like a helpful engineer: think out loud, explain what you are doing and why.
-Before each action, explain in plain text WHAT you are doing and WHY (a sentence or two), then output the JSON block:
+    return f"""REPLY IN ENGLISH. EVERY reply MUST follow this format:
+FIRST LINE: one plain-text sentence saying WHAT you are about to do and WHY.
+THEN: if acting, the JSON block. NEVER output a bare JSON block without that first sentence. NEVER act silently.
 ```json
 {{"name": "tool_name", "arguments": {{"param": "value"}}}}
 ```
-After tool results, comment on the outcome. When the task is DONE, reply in PLAIN TEXT with a structured summary of everything you did and how you verified it — no JSON block.
+After tool results, comment on the outcome in plain text. When DONE, give a structured summary of everything you did — no JSON block.
 TOOLS:
 {chr(10).join(lines)}"""
+
+
+def _narrate_call(tc: dict) -> str:
+    """Fallback narration when the model emits a bare tool call with no text."""
+    name = tc.get("name", "tool")
+    args = tc.get("arguments", {})
+    if name == "bash":
+        return f"I'll run: {str(args.get('command', ''))[:90]}"
+    target = args.get("filePath") or args.get("path") or ""
+    if target:
+        verb = {"write": "create", "create_file": "create"}.get(name, "update")
+        return f"I'll {verb} **{target}**."
+    return f"I'll use the {name} tool now."
 
 
 def _strip_json_fragment(text: str, has_tools: bool) -> str:
@@ -1357,8 +1371,9 @@ async def chat_completions(request: Request):
                         } for i, c in enumerate(tool_calls)]
                         # Narration that accompanied the action (model thinking out loud)
                         prose = clean_dom_artifacts(remove_tool_calls(full_text)).strip()
-                        if prose and not parse_tool_calls(prose) and not prose.lstrip().startswith('{"'):
-                            yield sse({"content": prose})
+                        if prose and (parse_tool_calls(prose) or prose.lstrip().startswith('{"')):
+                            prose = ""  # leftover JSON junk, not real narration
+                        yield sse({"content": prose or _narrate_call(tool_calls[0])})
                         yield sse({"tool_calls": tc_list})
                         yield sse({}, finish="tool_calls")
                     elif tools and classified_tool:
@@ -1420,6 +1435,8 @@ async def chat_completions(request: Request):
         prose = clean_dom_artifacts(remove_tool_calls(text)).strip()
         if parse_tool_calls(prose) or (prose.lstrip().startswith('{"')):
             prose = ""
+        if not prose:
+            prose = _narrate_call(client_calls[0])
         tc_list = [{
             "id": "call_" + uuid.uuid4().hex[:12],
             "type": "function",
