@@ -80,9 +80,10 @@ _check_for_updates()
 
 
 MODEL_MAP = {
-    # New DeepSeek UI: mode tabs Instant / Expert / Vision
+    # New DeepSeek UI: mode tabs Instant / Expert / Vision, dropdown shows DeepSeek V3.2
     "deepseek-chat": "Instant",
     "deepseek-v3": "Instant",
+    "deepseek-v3.2": "Instant",
     "deepseek-v4": "Expert",
     "deepseek-v4-pro": "Expert",
     "deepseek-reasoner": "Expert",
@@ -309,22 +310,6 @@ class ToolExecutor:
             path.unlink()
             return f"File deleted: {file_path}"
 
-
-def build_tool_prompt(tools: list) -> str:
-    """Convert OpenAI tool definitions to compact natural language for DeepSeek."""
-    if not tools:
-        return ""
-
-    lines = []
-    for tool in tools[:15]:
-        func = tool.get("function", {})
-        name = func.get("name", "")
-        if not name:
-            continue
-        props = func.get("parameters", {}).get("properties", {})
-        required = func.get("parameters", {}).get("required", [])
-        args_sig = ", ".join(f"{p}:{props[p].get('type','string')}" for p in required) or "none"
-        lines.append(f"- {name}({args_sig})")
 
 def build_tool_prompt(tools: list) -> str:
     """Convert OpenAI tool definitions to compact natural language for DeepSeek."""
@@ -702,18 +687,51 @@ class DeepSeekDriver:
         }""")
 
     async def select_model(self, label):
-        """New UI: click the mode tab (Instant / Expert / Vision)."""
+        """New UI: click the mode tab (Instant / Expert / Vision) or dropdown item (DeepSeek V3.2)."""
         if not label:
             return
-        await self.page.evaluate(
+        
+        # First try direct label match (Instant / Expert / Vision)
+        clicked = await self.page.evaluate(
             """(label) => {
                 const els = [...document.querySelectorAll('button,div,span')];
                 const tab = els.find(e => e.children.length === 0 && (e.textContent||'').trim() === label)
                          || els.find(e => (e.textContent||'').trim() === label);
-                if (tab) tab.click();
+                if (tab) {
+                    tab.click();
+                    return true;
+                }
+                return false;
             }""",
             label,
         )
+        
+        # If not found, try dropdown model selector (DeepSeek V3.2 / Instant / Expert)
+        if not clicked:
+            await self.page.evaluate(
+                """(label) => {
+                    // Click model dropdown/selector to open it
+                    const selectors = [...document.querySelectorAll('button,div[role="button"],span[role="button"]')];
+                    const dropdown = selectors.find(e => {
+                        const t = (e.textContent||'').toLowerCase();
+                        return t.includes('deepseek') || t.includes('model') || t.includes('v3') || t.includes('v4');
+                    });
+                    if (dropdown) dropdown.click();
+                }""",
+                label,
+            )
+            await self.page.wait_for_timeout(300)
+            
+            # Now try to select from dropdown
+            await self.page.evaluate(
+                """(label) => {
+                    const items = [...document.querySelectorAll('li,div[role="menuitem"],div[role="option"],button,span')];
+                    const item = items.find(e => (e.textContent||'').trim().includes(label));
+                    if (item) item.click();
+                }""",
+                label,
+            )
+        
         await self.page.wait_for_timeout(600)
 
     async def ensure_think_off(self):
@@ -1673,7 +1691,6 @@ async def chat_completions(request: Request):
                             if isinstance(args, dict):
                                 args = json.dumps(args)
                             tc["arguments"] = args
-                            print(f"[bridge] sending to client: name={tc.get('name')} args_type={type(args).__name__} args_len={len(str(args))}", flush=True)
                         tc_list = [{
                             "id": "call_" + uuid.uuid4().hex[:12],
                             "type": "function",
