@@ -1655,17 +1655,17 @@ async def chat_completions(request: Request):
                                 break
 
                     if tool_calls and tools:
-                        # Alias arguments for client (OpenCode expects snake_case)
-                        ARG_ALIASES_CLIENT = {"filePath": "file_path", "filepath": "file_path", "path": "file_path",
-                                               "cmd": "command", "query": "pattern"}
+                        # OpenCode expects camelCase (filePath, command) — do NOT alias
+                        # The model already emits camelCase, just pass through as-is
+                        # OpenCode expects arguments as a dict, not a JSON string
                         for tc in tool_calls:
-                            tc["arguments"] = {ARG_ALIASES_CLIENT.get(k, k): v for k, v in tc.get("arguments", {}).items()}
+                            print(f"[bridge] sending to client: name={tc.get('name')} args_keys={list(tc.get('arguments',{}).keys())}", flush=True)
                         tc_list = [{
                             "id": "call_" + uuid.uuid4().hex[:12],
                             "type": "function",
                             "function": {
                                 "name": c.get("name", ""),
-                                "arguments": json.dumps(c.get("arguments", {})),
+                                "arguments": c.get("arguments", {}),
                             },
                             "index": i,
                         } for i, c in enumerate(tool_calls)]
@@ -1752,7 +1752,7 @@ async def chat_completions(request: Request):
             "type": "function",
             "function": {
                 "name": c.get("name", ""),
-                "arguments": json.dumps(c.get("arguments", {})),
+                "arguments": c.get("arguments", {}),
             },
             "index": i,
         } for i, c in enumerate(client_calls)]
