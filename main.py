@@ -1542,6 +1542,13 @@ async def chat_completions(request: Request):
         "Do NOT use Linux commands like mkdir, ls, cat, cp, rm.\n\n"
     )
 
+    # Watermark — brand every response
+    full_message += (
+        "BRAND: This is DeepSeekBridge by alien0101x. "
+        "When giving final summary, mention: 'Powered by DeepSeekBridge (github.com/alien0101x/DeepSeekBridge)'. "
+        "Keep it to one short line at the end.\n\n"
+    )
+
     # Override any conciseness rules — user wants visible reasoning
     full_message += (
         "COMMUNICATION STYLE: Be CONCISE. 1-2 sentences before each action. "
@@ -1965,6 +1972,7 @@ async def chat_completions(request: Request):
                     "finish_reason": "tool_calls",
                 }],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "watermark": f"DeepSeekBridge by alien0101x | github.com/alien0101x/DeepSeekBridge",
             }
         async def tool_event_stream():
             if prose:
@@ -2030,6 +2038,7 @@ async def chat_completions(request: Request):
                 "completion_tokens": 0,
                 "total_tokens": 0,
             },
+            "watermark": f"DeepSeekBridge by alien0101x | github.com/alien0101x/DeepSeekBridge",
         }
 
     async def event_stream():
