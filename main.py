@@ -1475,9 +1475,6 @@ async def chat_completions(request: Request):
             full_message += part + "\n\n"
 
     # Add current user message
-    # Current request = last NON-assistant message. When the transcript ends
-    # with our own reply (post-tool rounds), asking the model to respond to
-    # itself makes it echo completion ("Done.") forever.
     current_msg = "[User]: Hello"
     for _p in reversed(history_parts):
         if not _p.startswith("[Assistant]:"):
@@ -1486,6 +1483,17 @@ async def chat_completions(request: Request):
     else:
         if history_parts:
             current_msg = history_parts[-1]
+
+    # Stop detection: if user says stop/done/cancel, force text-only response
+    _stop_words = r'\b(stop|done|cancel|enough|quit|that.?s it|that.?s enough|no more)\b'
+    _user_text = current_msg.replace("[User]: ", "", 1).lower()
+    if re.search(_stop_words, _user_text, re.I):
+        full_message += (
+            "STOP COMMAND DETECTED. The user wants you to STOP.\n"
+            "Do NOT use any tools. Do NOT call any functions.\n"
+            "Reply with a short text summary only. No JSON blocks.\n\n"
+        )
+
     full_message += "Current request:\n" + current_msg
 
     # Log user request to chat history
@@ -1682,7 +1690,7 @@ async def chat_completions(request: Request):
                         print("[bridge] filler sign-off detected -> final text", flush=True)
                         tool_calls = []
 
-                    # Repeat-loop guard: stop on ANY repeated command
+                    # Repeat-loop guard: stop on ANY repeated tool
                     if tool_calls:
                         for tc in tool_calls:
                             sig = tc.get("name", "")
@@ -1690,12 +1698,18 @@ async def chat_completions(request: Request):
                             if isinstance(args, dict):
                                 if sig == "bash":
                                     cmd = str(args.get("command", "")).lower().strip()
-                                    # Normalize: strip paths, just keep command + key args
-                                    cmd = re.sub(r'["\']?[A-Za-z]:\\[^"\s]*["\']?', '', cmd)
-                                    cmd = re.sub(r'\s+', ' ', cmd).strip()
-                                    sig = f"bash:{cmd[:60]}"
+                                    # Super-aggressive: extract just the first command word
+                                    # Split on ; | & and take first word of each part
+                                    parts = re.split(r'[;&|]', cmd)
+                                    verbs = []
+                                    for p in parts:
+                                        p = p.strip().split()[0] if p.strip().split() else ""
+                                        p = p.split("/")[-1].split("\\")[-1]  # basename
+                                        if p:
+                                            verbs.append(p)
+                                    sig = f"bash:{'+'.join(sorted(verbs))}"
                                 else:
-                                    sig = f"{sig}:{json.dumps(args, sort_keys=True)[:60]}"
+                                    sig = f"{sig}:{list(args.keys())[0] if args else ''}"
                             if not hasattr(driver, "_recent_sigs"):
                                 driver._recent_sigs = []
                             driver._recent_sigs.append(sig)
@@ -1708,12 +1722,12 @@ async def chat_completions(request: Request):
                                 print(f"[bridge] repeat-loop detected ({s}) -> stopping", flush=True)
                                 tool_calls = []
                                 break
-                        # Hard limit: max 4 tool calls total per request
+                        # Hard limit: max 3 tool calls total per request
                         if not hasattr(driver, "_round_count"):
                             driver._round_count = 0
                         driver._round_count += len(tool_calls)
-                        if driver._round_count > 4:
-                            print(f"[bridge] max rounds (4) reached -> stopping", flush=True)
+                        if driver._round_count > 3:
+                            print(f"[bridge] max rounds (3) reached -> stopping", flush=True)
                             tool_calls = []
 
                     # Client-executes mode: hand tool calls back so the client
