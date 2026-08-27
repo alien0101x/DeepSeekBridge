@@ -56,13 +56,13 @@ if os.getenv("DEEPSEEK_HIDE_BROWSER", "0") == "1":
 
 # ─── Owner signature (embedded, cannot be removed without breaking auth) ───
 __author__ = "alien0101x"
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __license__ = "MIT"
 __repo__ = "github.com/alien0101x/DeepSeekBridge"
 
 _BANNER = r"""
 ╔══════════════════════════════════════════════════════════════╗
-║  DeepSeekBridge v2.0.0                                      ║
+║  DeepSeekBridge v2.0.1                                      ║
 ║  Created by: alien0101x                                     ║
 ║  GitHub: github.com/alien0101x                              ║
 ║  License: MIT                                               ║
