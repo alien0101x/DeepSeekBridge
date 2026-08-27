@@ -1551,6 +1551,8 @@ async def chat_completions(request: Request):
                         await driver.select_model(label)
                         await driver.ensure_think_off()
                         chat_turn_count = 0
+                    driver._round_count = 0  # Reset round counter for new request
+                    driver._recent_sigs = []  # Reset repeat-loop tracker
                     yield sse({"role": "assistant"})
 
                     # Buffer ALL chunks — classify the full response before yielding content
@@ -1681,16 +1683,33 @@ async def chat_completions(request: Request):
                         print("[bridge] filler sign-off detected -> final text", flush=True)
                         tool_calls = []
 
-                    # Repeat-loop guard: if same tool+args appeared 3+ times, stop
+                    # Repeat-loop guard: if same tool appeared 3+ times, stop
                     if tool_calls:
-                        sig = json.dumps(tool_calls[0], sort_keys=True)[:200]
+                        # Normalize: just tool name + first arg key (catches similar verification loops)
+                        sig = tool_calls[0].get("name", "")
+                        args = tool_calls[0].get("arguments", {})
+                        if isinstance(args, dict):
+                            # For bash, just count the base command
+                            if sig == "bash":
+                                cmd = str(args.get("command", "")).lower()
+                                base = cmd.split()[0].split("/")[-1].split("\\")[-1] if cmd else ""
+                                sig = f"bash:{base}"
+                            else:
+                                sig = f"{sig}:{list(args.keys())[0] if args else ''}"
                         if not hasattr(driver, "_recent_sigs"):
                             driver._recent_sigs = []
                         driver._recent_sigs.append(sig)
-                        if len(driver._recent_sigs) > 8:
-                            driver._recent_sigs = driver._recent_sigs[-8:]
+                        if len(driver._recent_sigs) > 10:
+                            driver._recent_sigs = driver._recent_sigs[-10:]
                         if driver._recent_sigs.count(sig) >= 3:
-                            print(f"[bridge] repeat-loop detected ({sig[:80]}...) -> stopping", flush=True)
+                            print(f"[bridge] repeat-loop detected ({sig}) -> stopping", flush=True)
+                            tool_calls = []
+                        # Also enforce max total rounds per request
+                        if not hasattr(driver, "_round_count"):
+                            driver._round_count = 0
+                        driver._round_count += 1
+                        if driver._round_count > 8:
+                            print(f"[bridge] max rounds (8) reached -> stopping", flush=True)
                             tool_calls = []
 
                     # Client-executes mode: hand tool calls back so the client
