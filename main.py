@@ -1555,10 +1555,9 @@ async def chat_completions(request: Request):
         if history_parts:
             current_msg = history_parts[-1]
 
-    # Stop detection: if user says stop/done/cancel, force text-only response
-    _stop_words = r'\b(stop|done|cancel|enough|quit|that.?s it|that.?s enough|no more)\b'
-    _user_text = current_msg.replace("[User]: ", "", 1).lower()
-    if re.search(_stop_words, _user_text, re.I):
+    # Stop detection: only trigger if message is JUST a stop command (short, no other content)
+    _user_text = current_msg.replace("[User]: ", "", 1).strip()
+    if len(_user_text) < 20 and re.match(r'^(stop|done|cancel|enough|quit|that.?s it|that.?s enough|no more)$', _user_text, re.I):
         full_message += (
             "STOP COMMAND DETECTED. The user wants you to STOP.\n"
             "Do NOT use any tools. Do NOT call any functions.\n"
