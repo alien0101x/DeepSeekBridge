@@ -531,12 +531,21 @@ def parse_tool_calls(text: str) -> list:
     # Normalize tool names to what the bridge expects
     _NAME_MAP = {
         "run_terminal_command": "bash",
+        "run_commands": "bash",
         "execute_command": "bash",
         "create_file": "write",
         "read_file": "read",
         "edit_file": "edit",
         "list_files": "glob",
         "search_files": "grep",
+    }
+    # Normalize argument names
+    _ARG_MAP = {
+        "commands": "command",
+        "filePath": "file_path",
+        "filepath": "file_path",
+        "path": "file_path",
+        "query": "pattern",
     }
     tool_calls = []
     for match in candidates:
@@ -551,6 +560,9 @@ def parse_tool_calls(text: str) -> list:
             # Normalize tool name
             if call.get("name") in _NAME_MAP:
                 call["name"] = _NAME_MAP[call["name"]]
+            # Normalize argument names
+            if isinstance(call.get("arguments"), dict):
+                call["arguments"] = {_ARG_MAP.get(k, k): v for k, v in call["arguments"].items()}
             if call.get("name"):
                 tool_calls.append(call)
             elif 'filePath' in match or 'content' in match:
