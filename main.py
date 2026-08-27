@@ -152,6 +152,13 @@ class ToolExecutor:
                 "glob": "list_files",
                 "grep": "search_files",
                 "ls": "list_files",
+                "run_terminal_command": "execute_command",
+                "execute_command": "execute_command",
+                "create_file": "create_file",
+                "read_file": "read_file",
+                "edit_file": "edit_file",
+                "list_files": "list_files",
+                "search_files": "search_files",
             }
             tool_name = TOOL_MAP.get(tool_name, tool_name)
 
@@ -161,6 +168,9 @@ class ToolExecutor:
             arguments = {ARG_ALIASES.get(k, k): v for k, v in arguments.items()}
 
             if tool_name == "execute_command":
+                cmd = arguments.get("command", "")
+                if not cmd or not cmd.strip():
+                    return "Error: command argument is required and must not be empty"
                 return self.execute_command(arguments)
             elif tool_name == "create_file":
                 return self.create_file(arguments)
@@ -463,6 +473,16 @@ def parse_tool_calls(text: str) -> list:
     """Parse tool calls from model response. Tolerates sanitized/mangled tags."""
     candidates = []
 
+    # 0) DeepSeek ```tool format: TOOL_NAME: ... BEGIN_ARG: key\nvalue\nEND_ARG
+    for m in re.finditer(r'```tool\s*(.*?)\s*```', text, re.DOTALL):
+        block = m.group(1)
+        name_m = re.search(r'TOOL_NAME:\s*(\S+)', block)
+        if name_m:
+            args = {}
+            for arg_m in re.finditer(r'BEGIN_ARG:\s*(\S+)\s*\n(.*?)\n\s*END_ARG', block, re.DOTALL):
+                args[arg_m.group(1)] = arg_m.group(2).strip()
+            candidates.append(json.dumps({"name": name_m.group(1), "arguments": args}))
+
     # 1) Tag variants (<tool_call>, <_call>, <_>, mangled forms)
     for pat in (
         r'<tool_call>\s*(\{.*?\})\s*</tool_call>',
@@ -498,6 +518,16 @@ def parse_tool_calls(text: str) -> list:
                         candidates.append(span)
                     start = None
 
+    # Normalize tool names to what the bridge expects
+    _NAME_MAP = {
+        "run_terminal_command": "bash",
+        "execute_command": "bash",
+        "create_file": "write",
+        "read_file": "read",
+        "edit_file": "edit",
+        "list_files": "glob",
+        "search_files": "grep",
+    }
     tool_calls = []
     for match in candidates:
         try:
@@ -505,6 +535,9 @@ def parse_tool_calls(text: str) -> list:
             call = json.loads(cleaned)
             if isinstance(call.get("arguments"), str):
                 call["arguments"] = json.loads(call["arguments"])
+            # Normalize tool name
+            if call.get("name") in _NAME_MAP:
+                call["name"] = _NAME_MAP[call["name"]]
             if call.get("name"):
                 tool_calls.append(call)
             elif 'filePath' in match or 'content' in match:
@@ -520,6 +553,9 @@ def parse_tool_calls(text: str) -> list:
             # "content": "print("Hello World")" — re-extract key/value pairs leniently.
             repaired = _repair_broken_json(cleaned)
             if repaired:
+                # Normalize repaired call too
+                if repaired.get("name") in _NAME_MAP:
+                    repaired["name"] = _NAME_MAP[repaired["name"]]
                 tool_calls.append(repaired)
 
     return tool_calls
