@@ -1,6 +1,7 @@
 {
   "workspace": "D:\\OpenCode\\agent-demo",
   "watermark": true,
+  "show_browser": true,
   "owner_name": "alien0101x",
   "repo_url": "github.com/alien0101x/DeepSeekBridge"
 }

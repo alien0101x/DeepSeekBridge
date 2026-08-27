@@ -39,14 +39,20 @@ os.makedirs(PROFILE, exist_ok=True)
 # Workspace: env var > config.json > current directory
 _config_path = os.path.join(os.path.dirname(__file__), "config.json")
 WORKSPACE = os.getenv("DEEPSEEK_WORKSPACE", "")
-if not WORKSPACE and os.path.exists(_config_path):
+SHOW_BROWSER = True
+_cfg_data = {}
+if os.path.exists(_config_path):
     try:
-        _cfg = json.loads(open(_config_path, encoding="utf-8").read())
-        WORKSPACE = _cfg.get("workspace", "")
+        _cfg_data = json.loads(open(_config_path, encoding="utf-8").read())
+        WORKSPACE = WORKSPACE or _cfg_data.get("workspace", "")
+        SHOW_BROWSER = _cfg_data.get("show_browser", True)
     except Exception:
         pass
 if not WORKSPACE:
     WORKSPACE = os.getcwd()
+# Env var overrides config
+if os.getenv("DEEPSEEK_HIDE_BROWSER", "0") == "1":
+    SHOW_BROWSER = False
 
 # ─── Owner signature (embedded, cannot be removed without breaking auth) ───
 __author__ = "alien0101x"
@@ -649,14 +655,12 @@ class DeepSeekDriver:
 
     async def start(self):
         self.pw = await async_playwright().__aenter__()
-        # Chrome visible by default. Set DEEPSEEK_HIDE_BROWSER=1 to hide.
         self.ctx = await self.pw.chromium.launch_persistent_context(
             PROFILE,
             headless=False,
-            # Off-screen by default; set DEEPSEEK_SHOW_BROWSER=1 to show
             args=[
                 "--disable-blink-features=AutomationControlled",
-                f"--window-position={'-32000,-32000' if os.environ.get('DEEPSEEK_HIDE_BROWSER', '0') == '1' else '100,100'}",
+                f"--window-position={'-32000,-32000' if not SHOW_BROWSER else '100,100'}",
                 "--window-size=1280,900",
             ],
         )
