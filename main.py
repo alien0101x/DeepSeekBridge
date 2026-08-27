@@ -1403,6 +1403,11 @@ async def chat_completions(request: Request):
     model = data.get("model", "deepseek-chat")
     stream = bool(data.get("stream", False))
     tools = data.get("tools", [])
+    # Client can specify workspace per-request via body or header
+    req_workspace = data.get("workspace", "") or request.headers.get("x-workspace", "")
+    if req_workspace and os.path.isdir(req_workspace):
+        tool_executor.workspace = Path(req_workspace)
+        print(f"[workspace] using client workspace: {req_workspace}", flush=True)
 
     # Debug: log incoming request structure
     print(f"REQUEST: model={model} stream={stream} tools={len(tools)} msgs={len(messages)}", flush=True)
@@ -1444,6 +1449,13 @@ async def chat_completions(request: Request):
     # Client system prompt (defines the agent's persona/behavior) — keep it
     if system_text.strip():
         full_message += "YOUR INSTRUCTIONS:\n" + system_text.strip()[:6000] + "\n\n"
+
+    # Platform info — prevents Linux commands on Windows
+    full_message += (
+        "PLATFORM: Windows PowerShell. Use PowerShell commands only. "
+        "Examples: New-Item, Get-ChildItem, Set-Content, Copy-Item, Remove-Item. "
+        "Do NOT use Linux commands like mkdir, ls, cat, cp, rm.\n\n"
+    )
 
     # Override any conciseness rules — user wants visible reasoning
     full_message += (
