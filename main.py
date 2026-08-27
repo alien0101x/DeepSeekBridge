@@ -474,14 +474,23 @@ def parse_tool_calls(text: str) -> list:
     """Parse tool calls from model response. Tolerates sanitized/mangled tags."""
     candidates = []
 
-    # 0) DeepSeek ```tool format: TOOL_NAME: ... BEGIN_ARG: key\nvalue\nEND_ARG
+    # 0) DeepSeek ```tool format: TOOL_NAME: ... ARGUMENTS: {...} or BEGIN_ARG/END_ARG
     for m in re.finditer(r'```tool\s*(.*?)\s*```', text, re.DOTALL):
         block = m.group(1)
         name_m = re.search(r'TOOL_NAME:\s*(\S+)', block)
         if name_m:
             args = {}
-            for arg_m in re.finditer(r'BEGIN_ARG:\s*(\S+)\s*\n(.*?)\n\s*END_ARG', block, re.DOTALL):
-                args[arg_m.group(1)] = arg_m.group(2).strip()
+            # Try ARGUMENTS: {...} format first
+            args_m = re.search(r'ARGUMENTS:\s*(\{.*\})', block, re.DOTALL)
+            if args_m:
+                try:
+                    args = json.loads(args_m.group(1))
+                except json.JSONDecodeError:
+                    pass
+            else:
+                # Try BEGIN_ARG/END_ARG format
+                for arg_m in re.finditer(r'BEGIN_ARG:\s*(\S+)\s*\n(.*?)\n\s*END_ARG', block, re.DOTALL):
+                    args[arg_m.group(1)] = arg_m.group(2).strip()
             candidates.append(json.dumps({"name": name_m.group(1), "arguments": args}))
 
     # 1) Tag variants (<tool_call>, <_call>, <_>, mangled forms)
