@@ -383,6 +383,7 @@ Example shape (use the real tool "{ex_name}"):
 {example}
 
 CRITICAL RULES:
+- The JSON key MUST be "name" (NOT "tool_name"). Example: {{"name": "bash", "arguments": {{"command": "..."}}}}
 - NEVER respond with ONLY text narration. Every response that takes action MUST include the JSON block.
 - Keep narration SHORT. 1-2 sentences max. No essays.
 - After writing a file, run it ONCE to verify. Then STOP. Do NOT run Get-ChildItem, Get-Content, or other verification commands.
@@ -535,6 +536,9 @@ def parse_tool_calls(text: str) -> list:
             call = json.loads(cleaned)
             if isinstance(call.get("arguments"), str):
                 call["arguments"] = json.loads(call["arguments"])
+            # Handle "tool_name" as alias for "name"
+            if not call.get("name") and call.get("tool_name"):
+                call["name"] = call.pop("tool_name")
             # Normalize tool name
             if call.get("name") in _NAME_MAP:
                 call["name"] = _NAME_MAP[call["name"]]
