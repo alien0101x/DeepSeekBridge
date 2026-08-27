@@ -1682,31 +1682,36 @@ async def chat_completions(request: Request):
                         print("[bridge] filler sign-off detected -> final text", flush=True)
                         tool_calls = []
 
-                    # Repeat-loop guard: if same tool appeared 2+ times, stop
+                    # Repeat-loop guard: stop on ANY repeated command
                     if tool_calls:
-                        # Normalize: just tool name + first arg key (catches similar verification loops)
-                        sig = tool_calls[0].get("name", "")
-                        args = tool_calls[0].get("arguments", {})
-                        if isinstance(args, dict):
-                            # For bash, just count the base command
-                            if sig == "bash":
-                                cmd = str(args.get("command", "")).lower()
-                                base = cmd.split()[0].split("/")[-1].split("\\")[-1] if cmd else ""
-                                sig = f"bash:{base}"
-                            else:
-                                sig = f"{sig}:{list(args.keys())[0] if args else ''}"
-                        if not hasattr(driver, "_recent_sigs"):
-                            driver._recent_sigs = []
-                        driver._recent_sigs.append(sig)
+                        for tc in tool_calls:
+                            sig = tc.get("name", "")
+                            args = tc.get("arguments", {})
+                            if isinstance(args, dict):
+                                if sig == "bash":
+                                    cmd = str(args.get("command", "")).lower().strip()
+                                    # Normalize: strip paths, just keep command + key args
+                                    cmd = re.sub(r'["\']?[A-Za-z]:\\[^"\s]*["\']?', '', cmd)
+                                    cmd = re.sub(r'\s+', ' ', cmd).strip()
+                                    sig = f"bash:{cmd[:60]}"
+                                else:
+                                    sig = f"{sig}:{json.dumps(args, sort_keys=True)[:60]}"
+                            if not hasattr(driver, "_recent_sigs"):
+                                driver._recent_sigs = []
+                            driver._recent_sigs.append(sig)
+                        # Keep only last 6 signatures
                         if len(driver._recent_sigs) > 6:
                             driver._recent_sigs = driver._recent_sigs[-6:]
-                        if driver._recent_sigs.count(sig) >= 2:
-                            print(f"[bridge] repeat-loop detected ({sig}) -> stopping", flush=True)
-                            tool_calls = []
-                        # Also enforce max total rounds per request (very strict)
+                        # Check if ANY signature appeared 2+ times
+                        for s in driver._recent_sigs:
+                            if driver._recent_sigs.count(s) >= 2:
+                                print(f"[bridge] repeat-loop detected ({s}) -> stopping", flush=True)
+                                tool_calls = []
+                                break
+                        # Hard limit: max 4 tool calls total per request
                         if not hasattr(driver, "_round_count"):
                             driver._round_count = 0
-                        driver._round_count += 1
+                        driver._round_count += len(tool_calls)
                         if driver._round_count > 4:
                             print(f"[bridge] max rounds (4) reached -> stopping", flush=True)
                             tool_calls = []
@@ -1715,7 +1720,7 @@ async def chat_completions(request: Request):
                     # (OpenCode etc.) runs + displays them natively.
                     if not (tools and not AUTOEXEC):
                         # AUTO-EXECUTE: loop until no more tool calls
-                        MAX_AUTO_ROUNDS = 5
+                        MAX_AUTO_ROUNDS = 3
                         for _auto in range(MAX_AUTO_ROUNDS):
                             if not tool_calls:
                                 break
@@ -1885,7 +1890,7 @@ async def chat_completions(request: Request):
         return StreamingResponse(tool_event_stream(), media_type="text/event-stream")
 
     # AUTO-EXECUTE: loop until no more tool calls or max iterations
-    MAX_AUTO_ROUNDS = 5
+    MAX_AUTO_ROUNDS = 3
     for _round in range(MAX_AUTO_ROUNDS):
         tool_calls = [c for c in relativize_tool_paths(parse_tool_calls(text)) if c.get("name") and any(v != "" for v in c.get("arguments", {}).values())]
         if not tool_calls:
