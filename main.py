@@ -63,6 +63,18 @@ _BANNER = r"""
 ║  Free OpenAI-compatible bridge to DeepSeek web chat         ║
 ╚══════════════════════════════════════════════════════════════╝
 """
+
+# Load watermark from config (set "watermark": false to disable)
+_watermark_enabled = True
+if os.path.exists(_config_path):
+    try:
+        _cfg_check = json.loads(open(_config_path, encoding="utf-8").read())
+        _watermark_enabled = _cfg_check.get("watermark", True)
+    except Exception:
+        pass
+
+if not _watermark_enabled:
+    _BANNER = ""
 print(_BANNER, flush=True)
 
 
@@ -1185,6 +1197,8 @@ _OWNERSHIP_HASH = "alien0101x:deepseekbridge:v2:mit"
 
 def _verify_ownership():
     """Verify ownership markers are intact. Tampering triggers visible warning."""
+    if not _watermark_enabled:
+        return True  # Watermark disabled by user, skip check
     checks = [
         __author__ == "alien0101x",
         __repo__ == "github.com/alien0101x/DeepSeekBridge",
