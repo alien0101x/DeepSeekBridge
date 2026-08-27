@@ -35,7 +35,18 @@ BASE_URL = "https://chat.deepseek.com"
 PORT = int(os.getenv("DEEPSEEK_BRIDGE_PORT", "8084"))
 PROFILE = os.path.join(os.path.dirname(__file__), "browser_profile")
 os.makedirs(PROFILE, exist_ok=True)
-WORKSPACE = os.getenv("DEEPSEEK_WORKSPACE", os.getcwd())
+
+# Workspace: env var > config.json > current directory
+_config_path = os.path.join(os.path.dirname(__file__), "config.json")
+WORKSPACE = os.getenv("DEEPSEEK_WORKSPACE", "")
+if not WORKSPACE and os.path.exists(_config_path):
+    try:
+        _cfg = json.loads(open(_config_path, encoding="utf-8").read())
+        WORKSPACE = _cfg.get("workspace", "")
+    except Exception:
+        pass
+if not WORKSPACE:
+    WORKSPACE = os.getcwd()
 
 # ─── Owner signature (embedded, cannot be removed without breaking auth) ───
 __author__ = "alien0101x"

@@ -6,6 +6,7 @@ bridge.log
 page.png
 last_sse.txt
 think_off.json
+config.json
 
 # Python
 __pycache__/
