@@ -355,7 +355,7 @@ def build_tool_prompt(tools: list) -> str:
     return f"""YOU ARE AN AI AGENT WITH TOOL ACCESS. You MUST use tools to complete tasks.
 
 FORMAT (MANDATORY for every action):
-STEP 1 - NARRATE: Write 2-3 sentences explaining what you will do, which files you'll modify, and what features you're adding.
+STEP 1 - NARRATE: Write 1-2 sentences explaining what you will do.
 STEP 2 - ACT: Include the JSON tool call block BELOW your narration. This is REQUIRED, not optional.
 
 Example shape (use the real tool "{ex_name}"):
@@ -363,10 +363,10 @@ Example shape (use the real tool "{ex_name}"):
 
 CRITICAL RULES:
 - NEVER respond with ONLY text narration. Every response that takes action MUST include the JSON block.
-- If you say "I'll read..." or "I'll create..." or "I'll update...", you MUST immediately follow with the JSON tool call.
-- Narration without a tool call is FORBIDDEN when you are about to act.
-
-After tool results, comment on what happened. When DONE, give a summary — no JSON block then.
+- Keep narration SHORT. 1-2 sentences max. No essays.
+- After writing a file, run it ONCE to verify. Then STOP. Do NOT run Get-ChildItem, Get-Content, or other verification commands.
+- Maximum 4 tool calls per request. After that, STOP and give final summary.
+- When DONE, give a 1-sentence summary — no JSON block then.
 TOOLS:
 {chr(10).join(lines)}"""
 
@@ -1459,11 +1459,10 @@ async def chat_completions(request: Request):
 
     # Override any conciseness rules — user wants visible reasoning
     full_message += (
-        "COMMUNICATION STYLE (overrides earlier brevity rules): Explain your work like a "
-        "senior engineer mentoring a junior. Before acting, say what you plan to do and why, "
-        "including specific details: filenames, function names, what features/improvements you're adding. "
-        "After each tool result, comment on what happened. When finished, give a clear summary: "
-        "what you created/changed, file by file, and how you verified it.\n\n"
+        "COMMUNICATION STYLE: Be CONCISE. 1-2 sentences before each action. "
+        "After writing a file, run it ONCE to verify output. Then STOP immediately. "
+        "No extra verification commands (Get-ChildItem, Get-Content, etc). "
+        "Max 4 tool calls per request. Final summary: 1 sentence only.\n\n"
     )
 
     # Tool format rules
@@ -1683,7 +1682,7 @@ async def chat_completions(request: Request):
                         print("[bridge] filler sign-off detected -> final text", flush=True)
                         tool_calls = []
 
-                    # Repeat-loop guard: if same tool appeared 3+ times, stop
+                    # Repeat-loop guard: if same tool appeared 2+ times, stop
                     if tool_calls:
                         # Normalize: just tool name + first arg key (catches similar verification loops)
                         sig = tool_calls[0].get("name", "")
@@ -1699,17 +1698,17 @@ async def chat_completions(request: Request):
                         if not hasattr(driver, "_recent_sigs"):
                             driver._recent_sigs = []
                         driver._recent_sigs.append(sig)
-                        if len(driver._recent_sigs) > 10:
-                            driver._recent_sigs = driver._recent_sigs[-10:]
-                        if driver._recent_sigs.count(sig) >= 3:
+                        if len(driver._recent_sigs) > 6:
+                            driver._recent_sigs = driver._recent_sigs[-6:]
+                        if driver._recent_sigs.count(sig) >= 2:
                             print(f"[bridge] repeat-loop detected ({sig}) -> stopping", flush=True)
                             tool_calls = []
-                        # Also enforce max total rounds per request
+                        # Also enforce max total rounds per request (very strict)
                         if not hasattr(driver, "_round_count"):
                             driver._round_count = 0
                         driver._round_count += 1
-                        if driver._round_count > 8:
-                            print(f"[bridge] max rounds (8) reached -> stopping", flush=True)
+                        if driver._round_count > 4:
+                            print(f"[bridge] max rounds (4) reached -> stopping", flush=True)
                             tool_calls = []
 
                     # Client-executes mode: hand tool calls back so the client
