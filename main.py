@@ -1506,9 +1506,8 @@ async def chat_completions(request: Request):
     # Create the full message with history
     full_message = ""
 
-    # Client system prompt (defines the agent's persona/behavior) — keep it
-    if system_text.strip():
-        full_message += "YOUR INSTRUCTIONS:\n" + system_text.strip()[:6000] + "\n\n"
+    # DO NOT include client system prompt — it confuses the model with wrong tool names
+    # (e.g. Cline's prompt makes model use ask_question instead of bash)
 
     # Platform info — prevents Linux commands on Windows
     full_message += (
