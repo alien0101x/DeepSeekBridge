@@ -1560,6 +1560,8 @@ async def chat_completions(request: Request):
     # Override any conciseness rules — user wants visible reasoning
     full_message += (
         "COMMUNICATION STYLE: Be CONCISE. 1-2 sentences before each action. "
+        "For simple greetings (hi, hello, hey) or questions - respond with TEXT ONLY, no tools. "
+        "Only use tools when the user asks you to CREATE, RUN, EDIT, or SEARCH files. "
         "After writing a file, run it ONCE to verify output. Then STOP immediately. "
         "No extra verification commands (Get-ChildItem, Get-Content, etc). "
         "Max 4 tool calls per request. Final summary: 1 sentence only.\n\n"
