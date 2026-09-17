@@ -1540,8 +1540,13 @@ async def chat_completions(request: Request):
     # Create the full message with history
     full_message = ""
 
-    # DO NOT include client system prompt — it confuses the model with wrong tool names
-    # (e.g. Cline's prompt makes model use ask_question instead of bash)
+    # CRITICAL: force text-only for simple stuff — must be FIRST instruction
+    full_message += (
+        "CRITICAL RULE: For greetings (hi, hello, hey), thanks, yes/no questions, "
+        "or any question that does NOT require creating/editing/running files — "
+        "respond with TEXT ONLY. Do NOT use any tools. Do NOT call bash. "
+        "Tools are ONLY for: creating files, editing files, running scripts, searching code.\n\n"
+    )
 
     # Platform info — prevents Linux commands on Windows
     full_message += (
