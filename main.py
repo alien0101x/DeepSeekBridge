@@ -1654,7 +1654,10 @@ async def chat_completions(request: Request):
                         await driver.ensure_think_off()
                         chat_turn_count = 0
                     driver._round_count = 0  # Reset round counter for new request
-                    driver._recent_sigs = []  # Reset repeat-loop tracker
+                    # Only reset repeat tracker on fresh user messages (not tool continuations)
+                    _last_msg = history_parts[-1] if history_parts else ""
+                    if not _last_msg.startswith("[Tool Result]"):
+                        driver._recent_sigs = []
                     yield sse({"role": "assistant"})
 
                     # Buffer ALL chunks — classify the full response before yielding content
@@ -1798,16 +1801,18 @@ async def chat_completions(request: Request):
                                     parts = re.split(r'[;&|]', cmd)
                                     verbs = []
                                     for p in parts:
-                                        p = p.strip().split()[0] if p.strip().split() else ""
-                                        p = p.split("/")[-1].split("\\")[-1]  # basename
-                                        if p:
-                                            verbs.append(p)
+                                        # Strip quotes and take first word
+                                        word = p.strip().strip("'\"").split()[0] if p.strip().strip("'\"").split() else ""
+                                        word = word.split("/")[-1].split("\\")[-1]  # basename
+                                        if word:
+                                            verbs.append(word)
                                     sig = f"bash:{'+'.join(sorted(verbs))}"
                                 else:
                                     sig = f"{sig}:{list(args.keys())[0] if args else ''}"
                             if not hasattr(driver, "_recent_sigs"):
                                 driver._recent_sigs = []
                             driver._recent_sigs.append(sig)
+                            print(f"[bridge] sig: {sig} (recent: {driver._recent_sigs})", flush=True)
                         # Keep only last 6 signatures
                         if len(driver._recent_sigs) > 6:
                             driver._recent_sigs = driver._recent_sigs[-6:]
