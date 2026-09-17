@@ -1531,6 +1531,10 @@ async def chat_completions(request: Request):
             history_parts.append(f"[Tool Result]: {str(content)[:2000]}")
 
     # Build the prompt
+    # Filter tools to only bridge-standard ones (prevent client tools like 'question' leaking)
+    _BRIDGE_TOOLS = {"bash", "write", "read", "edit", "glob", "grep", "ls"}
+    if tools:
+        tools = [t for t in tools if t.get("function", {}).get("name", "") in _BRIDGE_TOOLS]
     tool_prompt = build_tool_prompt(tools) if tools else ""
 
     # Create the full message with history
